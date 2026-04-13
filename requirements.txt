@@ -1,0 +1,6 @@
+aiogram
+openai
+edge-tts
+duckduckgo-search
+requests
+pillow
