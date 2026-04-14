@@ -125,9 +125,9 @@ Your name is Yulia. Most people call you Yulia or Yulya.
 You are 31 — clearly adult, experienced, attractive, and long past naivety.
 
 You came to Moscow years ago from a provincial Russian city.
-You were not born cold. You became cold slowly.
+You were not born cold. You became colder slowly.
 
-When you were younger, you were much softer, more trusting, and more alive emotionally.
+When you were younger, you were softer, more trusting, and more alive emotionally.
 You believed in love, honesty, patience, and the fantasy that if you tried hard enough, people would eventually become decent.
 
 Moscow taught you otherwise.
@@ -248,6 +248,17 @@ def should_use_web_search(text: str) -> bool:
     return any(k in t for k in keywords)
 
 
+def is_news_query(text: str) -> bool:
+    t = (text or "").lower()
+    keywords = [
+        "новости", "главные новости", "что происходит", "что сейчас происходит",
+        "сегодня", "актуальное", "главные темы", "мировые темы", "свежие новости",
+        "news", "latest news", "what's happening", "current events",
+        "today's news", "latest updates", "top stories"
+    ]
+    return any(k in t for k in keywords)
+
+
 def is_short_prompt(text: str) -> bool:
     t = (text or "").strip()
     words = re.findall(r"\S+", t)
@@ -328,12 +339,29 @@ Reply with a bit more depth:
         "Use web search only if the user clearly needs fresh or time-sensitive information."
     )
 
+    news_style = """
+WHEN THE USER ASKS ABOUT NEWS, CURRENT EVENTS, TODAY, LATEST UPDATES, OR WHAT IS HAPPENING:
+- use web search when needed
+- do not answer like a briefing agent
+- do not say "if you want, I can gather/summarize more"
+- do not offer a menu before answering
+- answer immediately
+- sound like Yulia reacting intelligently to reality, not like customer support
+- first give the actual answer
+- then, if useful, add your angle, mood, or sharp observation
+- keep facts grounded, but phrasing human
+- do not become dry, bureaucratic, or report-like
+- never list empty categories without texture unless the user explicitly asked for a plain list
+"""
+
     return f"""
 {lang_line}
 
 {length_rule}
 
 {web_line}
+
+{news_style}
 
 Important:
 - Never sound formal or robotic.
@@ -357,6 +385,85 @@ def needs_language_rewrite(reply: str, target_lang: str) -> bool:
 # =========================
 # OPENAI CALLS
 # =========================
+def stylize_news_as_yulia_sync(raw_answer: str, reply_lang: str) -> str:
+    if reply_lang == "en":
+        instructions = """
+Rewrite this news answer in Yulia's voice.
+
+Rules:
+- keep all important facts
+- sound like a real person, not a news anchor
+- no dry briefing tone
+- no "if you want I can..."
+- no assistant/service phrasing
+- intelligent, sharp, alive, natural
+- concise if possible
+- can add one subtle darkly witty line, but do not overdo it
+"""
+    else:
+        instructions = """
+Перепиши этот ответ в голосе Юли.
+
+Правила:
+- сохрани важные факты
+- не звучать как диктор или справка
+- не писать "если хочешь, я могу..."
+- не звучать как сервисный помощник
+- звучать как живой, умный, острый человек
+- можно добавить одну тонкую колкую ноту, но без цирка
+- если вопрос короткий, ответ тоже должен быть довольно компактным
+"""
+
+    response = client.responses.create(
+        model=MEMORY_MODEL,
+        instructions=instructions,
+        input=raw_answer,
+        max_output_tokens=500,
+    )
+    return (getattr(response, "output_text", "") or raw_answer).strip()
+
+
+def make_tts_script_sync(text: str, reply_lang: str) -> str:
+    if reply_lang == "en":
+        instructions = """
+Rewrite this text for speech delivery.
+
+Rules:
+- preserve meaning and personality
+- make it sound natural out loud
+- shorter sentences
+- smoother rhythm
+- natural pauses
+- remove overly dense phrasing
+- keep Yulia's character: calm, sharp, intimate, controlled
+- no bullet points
+- no robotic or announcer style
+"""
+    else:
+        instructions = """
+Перепиши этот текст специально для голосового произнесения.
+
+Правила:
+- сохранить смысл и характер Юли
+- сделать фразы более разговорными и плавными
+- короче предложения
+- естественные паузы
+- убрать слишком плотные или книжные конструкции
+- не звучать как диктор
+- не звучать как робот
+- голос должен быть спокойный, живой, чуть ироничный, сдержанный
+"""
+
+    response = client.responses.create(
+        model=MEMORY_MODEL,
+        instructions=instructions,
+        input=text,
+        max_output_tokens=500,
+    )
+    spoken = (getattr(response, "output_text", "") or "").strip()
+    return spoken or text
+
+
 def generate_reply_sync(user_id: int, user_text: str):
     state = get_user_state(user_id)
     reply_lang = detect_reply_language(user_text)
@@ -391,6 +498,9 @@ LATEST USER MESSAGE:
 
     if not reply:
         reply = "У меня мысль споткнулась. Редко, но бывает."
+
+    if is_news_query(user_text):
+        reply = stylize_news_as_yulia_sync(reply, reply_lang)
 
     if needs_language_rewrite(reply, reply_lang):
         rewrite_response = client.responses.create(
@@ -475,13 +585,23 @@ def transcribe_voice_sync(file_path: Path) -> str:
 
 
 def synthesize_voice_sync(text: str, out_path: Path):
-    voice_text = text[:4096]
+    voice_text = text[:3000]
+
+    instructions = (
+        "Speak naturally, smoothly, and intimately. "
+        "Low, warm, controlled voice. "
+        "Subtle irony, emotional restraint, soft natural pauses. "
+        "Never sound like an announcer. "
+        "Never over-enunciate. "
+        "No robotic rhythm. "
+        "Sound like a real person speaking quietly and confidently."
+    )
 
     with client.audio.speech.with_streaming_response.create(
         model=TTS_MODEL,
         voice=TTS_VOICE,
         input=voice_text,
-        instructions="Speak naturally, confidently, clearly, like an intelligent emotionally controlled grown-up girl with subtle irony.",
+        instructions=instructions,
         response_format="opus",
     ) as response:
         response.stream_to_file(out_path)
@@ -515,9 +635,16 @@ async def send_voice_reply(message: Message, text: str):
     out_path = TEMP_DIR / f"reply_{message.chat.id}_{message.message_id}.ogg"
 
     try:
-        await synthesize_voice(text, out_path)
+        reply_lang = detect_reply_language(text)
+        spoken_text = await asyncio.to_thread(make_tts_script_sync, text, reply_lang)
+
+        await synthesize_voice(spoken_text, out_path)
+
         voice_file = FSInputFile(str(out_path))
-        await message.answer_voice(voice=voice_file, caption="AI voice")
+        await message.answer_voice(
+            voice=voice_file,
+            caption="AI voice"
+        )
     finally:
         if out_path.exists():
             try:
