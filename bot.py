@@ -112,9 +112,6 @@ def count_latin(text: str) -> int:
 
 
 def detect_reply_language(text: str) -> str:
-    """
-    Возвращает 'en' или 'ru'
-    """
     lat = count_latin(text)
     cyr = count_cyrillic(text)
 
@@ -292,7 +289,6 @@ Target language for this turn: {'English' if reply_lang == 'en' else 'Russian'}.
     if not reply:
         reply = "Мозг на секунду споткнулся. Бывает."
 
-    # Жесткая страховка языка ответа
     if needs_language_rewrite(reply, reply_lang):
         rewrite_response = client.responses.create(
             model=MEMORY_MODEL,
@@ -456,18 +452,27 @@ async def process_user_message(message: Message, user_text: str, source: str = "
     state["history"] = trim_history(state["history"], 20)
     save_db()
 
-    await send_text_reply(message, reply)
-
-    # если пользователь прислал voice — логично ответить voice
-    # или можно включить постоянный голос командой /voice_on
-    if source == "voice" or state.get("voice_enabled", False):
+    # Если пользователь прислал голосовое — отвечаем только голосом
+    if source == "voice":
         try:
             await send_voice_reply(message, reply)
         except Exception:
             logging.exception("Ошибка TTS")
-            await message.answer("С голосом сейчас что-то перекосило, но текст я уже отправила.")
+            await message.answer("С голосом сейчас что-то перекосило, поэтому держи текст.")
+            await send_text_reply(message, reply)
 
-    # обновляем долгую память не на каждом сообщении, чтобы не жрать лишние токены
+    # Если пользователь написал текстом — отвечаем текстом
+    else:
+        await send_text_reply(message, reply)
+
+        # А если включен /voice_on — дублируем ещё и голосом
+        if state.get("voice_enabled", False):
+            try:
+                await send_voice_reply(message, reply)
+            except Exception:
+                logging.exception("Ошибка TTS")
+                await message.answer("Голос сейчас отвалился, так что читай глазами.")
+
     if state.get("turns_since_memory_refresh", 0) >= 4:
         try:
             await refresh_long_memory(user_id)
@@ -531,10 +536,6 @@ async def handle_voice(message: Message):
         await message.bot.download(file_info, destination=in_path)
 
         user_text = await transcribe_voice(in_path)
-
-        # по желанию можно показать распознанный текст:
-        # await message.answer(f"🎤 {user_text}")
-
         await process_user_message(message, user_text, source="voice")
 
     except Exception as e:
