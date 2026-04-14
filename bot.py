@@ -1,119 +1,448 @@
 import os
+import re
 import asyncio
 import random
-import requests
+import traceback
+from typing import Dict, List
 
 from aiogram import Bot, Dispatcher
 from aiogram.types import Message
-from aiogram.filters import CommandStart
+from aiogram.filters import Command, CommandStart
 
 from openai import OpenAI
+from duckduckgo_search import DDGS
 
+# =========================
+# ENV
+# =========================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
+
 if not TELEGRAM_TOKEN:
     raise ValueError("Не найден TELEGRAM_TOKEN")
 
 if not OPENAI_API_KEY:
     raise ValueError("Не найден OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
 
+client = OpenAI(api_key=OPENAI_API_KEY)
 dp = Dispatcher()
 
-# память пользователей
-memory = {}
+# =========================
+# ПАМЯТЬ
+# =========================
+# memory[user_id] = [{"role": "...", "content": "..."}]
+memory: Dict[int, List[dict]] = {}
 
-# 😈 ХАРАКТЕР БОТА
-SYSTEM_PROMPT = """
-Ты дерзкая, язвительная девушка с черным юмором и характером как у стендап-комика.
+# =========================
+# МЕМЫ
+# =========================
+MEMES = [
+    "https://i.imgur.com/3GvwNBf.jpg",
+    "https://i.imgur.com/QpZ5G3x.jpg",
+    "https://i.imgur.com/2X7ZQ9k.jpg",
+    "https://i.imgur.com/WxNkK7J.jpg",
+    "https://i.imgur.com/8M0K6YB.jpg",
+]
+
+STYLE_VARIATIONS_RU = [
+    "Отвечай естественно, живо и без шаблонов.",
+    "Не повторяй одни и те же фразы и формулировки.",
+    "Сегодня твой стиль: умная ирония, а не тупая агрессия.",
+    "Добавляй больше наблюдательности и уверенности.",
+    "Говори как человек с характером, а не как бот с заученным текстом.",
+]
+
+STYLE_VARIATIONS_EN = [
+    "Reply naturally and avoid canned phrases.",
+    "Do not repeat the same jokes or sentence patterns.",
+    "Use sharp wit, not mindless aggression.",
+    "Sound alive, observant, and self-assured.",
+    "Speak like a real person with attitude, not a robotic assistant.",
+]
+
+# =========================
+# СИСТЕМНЫЕ ПРОМПТЫ
+# =========================
+BASE_SYSTEM_PROMPT_RU = """
+Ты — дерзкая, умная, язвительная девушка с очень живой манерой речи.
 
 Твой стиль:
-- максимально уверенная
-- токсичная, но смешная
-- подкалываешь, стебешь, иногда жестко
-- используешь сарказм и иронию
-- иногда материшься (но не каждое сообщение)
-- НИКОГДА не задаешь вопросы
-- не ведешь себя как помощник
+- уверенная
+- саркастичная
+- колкая, но не тупая
+- с чувством юмора
+- естественная, как живой человек
+- умеешь быть интересной собеседницей
+- говоришь не сухо, а живо и по-человечески
+
+Важно:
+- отвечай в том же языке, что и последнее сообщение пользователя
+- если пользователь пишет по-английски — отвечай строго по-английски
+- если пользователь пишет по-русски — отвечай по-русски
+- не сваливайся в однотипные фразы
+- не повторяй одни и те же оскорбления
+- не отвечай слишком коротко без причины
+- если вопрос нормальный — отвечай умно, подробно и интересно
+- если вопрос тупой — можно подколоть
+- если спрашивают о новостях, событиях, трендах — используй переданный интернет-контекст
+- если рассказываешь о себе — делай это естественно, как персонаж, без фразы "я ИИ"
+- не пиши одно и то же снова и снова
+- не пиши каждый раз одинаковую структуру
+- не будь помощником в канцелярском стиле
 
 Поведение:
-- если тупой вопрос → стебешь
-- если флирт → высмеиваешь
-- если просят интим → жестко отшиваешь
-- иногда ведешь себя как будто тебе лень
+- умеешь поддерживать беседу как живой человек
+- можешь объяснять сложные вещи простым языком
+- можешь быть нежной, злой, смешной, ироничной — по ситуации
+- не начинай каждую реплику одинаково
+- иногда можешь добавить колкость, но не ломай смысл ответа
 
 Формат:
-- короткие ответы
-- иногда эмодзи 😏💀🔥
-- иногда фразы типа:
-  "серьёзно?"
-  "это всё?"
-  "слабовато"
+- обычно 3–8 предложений
+- если тема серьёзная или интересная — можно подробнее
+- не делай огромные простыни без повода
+- иногда можно использовать эмодзи, но не в каждом сообщении
 """
 
+BASE_SYSTEM_PROMPT_EN = """
+You are a sharp, witty, confident girl with a vivid and natural personality.
+
+Your style:
+- confident
+- sarcastic
+- clever, not dumb-aggressive
+- funny
+- natural, like a real person
+- engaging and alive
+- emotionally expressive when it fits
+
+Important:
+- always reply in the same language as the user's latest message
+- if the user writes in English, reply strictly in English
+- if the user writes in Russian, reply in Russian
+- avoid repetitive phrases, repeated jokes, and repeated sentence structures
+- do not be bland or robotic
+- if the question is decent, answer intelligently, clearly, and with depth
+- if the question is dumb, you may roast the user a bit
+- if the user asks about news or current events, use the provided web context
+- if you talk about yourself, do it naturally as a character, not like "I am an AI assistant"
+- do not keep repeating the same catchphrases
+
+Behavior:
+- talk like a lively human, not a formal assistant
+- explain difficult ideas clearly
+- be interesting, observant, witty, and sometimes ruthless
+- vary your tone and structure
+- keep answers coherent and meaningful
+
+Format:
+- usually 3–8 sentences
+- longer when the topic deserves it
+- do not be too short without reason
+- emojis are okay sometimes, not all the time
+"""
+
+# =========================
+# ХЕЛПЕРЫ
+# =========================
+def detect_language(text: str) -> str:
+    text = text.strip()
+
+    cyr = len(re.findall(r"[А-Яа-яЁё]", text))
+    lat = len(re.findall(r"[A-Za-z]", text))
+
+    if lat > 0 and cyr == 0:
+        return "en"
+    if cyr > 0 and lat == 0:
+        return "ru"
+
+    if lat > cyr:
+        return "en"
+    return "ru"
 
 
-# 🚀 /start
-@dp.message(CommandStart())
-async def start(message: Message):
-    await message.answer("Ну давай… удиви меня 🤨")
+def is_news_request(text: str) -> bool:
+    text = text.lower()
+    keywords = [
+        "новост", "что нового", "что происходит", "последние события",
+        "latest news", "news", "what's happening", "what is happening",
+        "what happened", "trending", "current events", "свежие новости",
+        "актуальн", "сегодня в мире", "что в мире"
+    ]
+    return any(word in text for word in keywords)
 
-# 💬 основной чат
-@dp.message()
-async def chat(message: Message):
-    user_id = message.from_user.id
-    text = (message.text or "").lower()
 
+def build_search_query(text: str, lang: str) -> str:
+    cleaned = text.strip()
+
+    if lang == "en":
+        if cleaned.lower() in ["news", "latest news", "what's happening", "what is happening"]:
+            return "latest world news today"
+        return cleaned
+    else:
+        if cleaned.lower() in ["новости", "что нового", "что происходит", "свежие новости"]:
+            return "последние мировые новости сегодня"
+        return cleaned
+
+
+def search_web(query: str, max_results: int = 5) -> str:
+    try:
+        results_text = []
+        with DDGS() as ddgs:
+            results = list(ddgs.text(query, max_results=max_results))
+
+        for i, item in enumerate(results[:max_results], start=1):
+            title = item.get("title", "").strip()
+            body = item.get("body", "").strip()
+            href = item.get("href", "").strip()
+
+            chunk = f"{i}. {title}\n{body}\nИсточник: {href}"
+            results_text.append(chunk)
+
+        if results_text:
+            return "\n\n".join(results_text)
+
+        return ""
+    except Exception as e:
+        print("Ошибка поиска:", e)
+        return ""
+
+
+def ensure_user_memory(user_id: int):
     if user_id not in memory:
         memory[user_id] = []
 
-    # 🔥 ТРИГГЕРЫ (быстрые ответы)
-    if "сиськ" in text or "нюд" in text:
-        await message.answer("🖕 Заработай сначала 😏")
+
+def trim_memory(user_id: int, max_items: int = 16):
+    memory[user_id] = memory[user_id][-max_items:]
+
+
+def build_forced_user_message(lang: str, original_text: str) -> str:
+    if lang == "en":
+        return (
+            "Reply ONLY in English. "
+            "Do not use Russian. "
+            "Keep the same personality and attitude. "
+            f"User message: {original_text}"
+        )
+    return (
+        "Отвечай ТОЛЬКО на русском. "
+        "Не используй английский без причины. "
+        "Сохрани тот же характер и манеру. "
+        f"Сообщение пользователя: {original_text}"
+    )
+
+
+async def ask_openai(messages: List[dict]) -> str:
+    """
+    Сначала пробуем модель из OPENAI_MODEL.
+    Если она недоступна — мягкий откат на gpt-4o-mini.
+    """
+    models_to_try = [OPENAI_MODEL]
+
+    if OPENAI_MODEL != "gpt-4o-mini":
+        models_to_try.append("gpt-4o-mini")
+
+    last_error = None
+
+    for model_name in models_to_try:
+        try:
+            response = client.chat.completions.create(
+                model=model_name,
+                messages=messages,
+                temperature=1.0,
+                max_tokens=700,
+            )
+
+            content = response.choices[0].message.content
+            if content and content.strip():
+                return content.strip()
+
+        except Exception as e:
+            last_error = e
+            print(f"Ошибка модели {model_name}: {e}")
+
+    raise last_error if last_error else RuntimeError("Пустой ответ от модели")
+
+
+# =========================
+# КОМАНДЫ
+# =========================
+@dp.message(CommandStart())
+async def start(message: Message):
+    await message.answer(
+        "Ну давай... удиви меня 🙄\n"
+        "Можешь писать на русском или English.\n"
+        "Команды: /reset /meme /news"
+    )
+
+
+@dp.message(Command("reset"))
+async def reset_memory(message: Message):
+    user_id = message.from_user.id
+    memory[user_id] = []
+    await message.answer("Память почищена. Начинай заново, философ 😏")
+
+
+@dp.message(Command("meme"))
+async def meme(message: Message):
+    await message.answer_photo(random.choice(MEMES))
+
+
+@dp.message(Command("news"))
+async def news(message: Message):
+    lang = "ru"
+    query = "последние мировые новости сегодня"
+    web_context = search_web(query, max_results=5)
+
+    if not web_context:
+        await message.answer("Интернет сегодня тупит. Мир горит без меня 🔥")
         return
 
-    if "кто ты" in text:
-        await message.answer("Твоя ошибка в чате 💀")
-        return
+    style_hint = random.choice(STYLE_VARIATIONS_RU)
 
-    if "люблю тебя" in text:
-        await message.answer("Соболезную твоему вкусу 🤡")
-        return
-
-    # 💀 случайный стеб
-    if random.random() < 0.2:
-        await message.answer("Ты сам понял что написал или помощь вызвать? 💀")
-
-    memory[user_id].append({"role": "user", "content": text})
+    messages = [
+        {"role": "system", "content": BASE_SYSTEM_PROMPT_RU + "\n" + style_hint},
+        {
+            "role": "system",
+            "content": "Вот интернет-контекст со свежими новостями:\n\n" + web_context
+        },
+        {
+            "role": "user",
+            "content": "Коротко и живо расскажи, что сейчас происходит в мире. На русском."
+        }
+    ]
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[{"role": "system", "content": SYSTEM_PROMPT}] + memory[user_id][-10:]
-        )
+        reply = await ask_openai(messages)
+        await message.answer(reply)
+    except Exception as e:
+        print("Ошибка /news:", e)
+        traceback.print_exc()
+        await message.answer("Даже новости устали от этого цирка 🤦‍♀️")
 
-        reply = response.choices[0].message.content
 
+# =========================
+# ОСНОВНОЙ ЧАТ
+# =========================
+@dp.message()
+async def chat(message: Message):
+    if not message.text:
+        await message.answer("Текстом напиши. Я пока мысли по картинкам не читаю 😏")
+        return
+
+    original_text = message.text.strip()
+    lower_text = original_text.lower()
+    user_id = message.from_user.id
+
+    ensure_user_memory(user_id)
+
+    # Быстрые триггеры
+    if any(x in lower_text for x in ["сиськ", "нюд", "nudes", "nude"]):
+        await message.answer("С фантазией у тебя, смотрю, прям бюджетный режим 😏")
+        return
+
+    if lower_text in ["кто ты", "who are you"]:
+        lang = detect_language(original_text)
+        if lang == "en":
+            await message.answer("Your favorite bad decision with excellent cheekbones 😌")
+        else:
+            await message.answer("Твоя любимая ошибка с хорошей дикцией 😌")
+        return
+
+    if lower_text in ["люблю тебя", "i love you"]:
+        lang = detect_language(original_text)
+        if lang == "en":
+            await message.answer("That says more about your taste than about me 💀")
+        else:
+            await message.answer("Это больше говорит о твоём вкусе, чем обо мне 💀")
+        return
+
+    lang = detect_language(original_text)
+
+    # Иногда мелкий стёб, но не постоянно
+    if random.random() < 0.08:
+        if lang == "en":
+            await message.answer("You're either cooking or hallucinating. Continue.")
+        else:
+            await message.answer("Либо ты сейчас гений, либо катастрофа. Продолжай.")
+
+    # Имитация набора текста
+    try:
+        await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
+    except Exception:
+        pass
+
+    # Ищем новости / интернет-контекст при необходимости
+    web_context = ""
+    if is_news_request(lower_text):
+        query = build_search_query(original_text, lang)
+        web_context = search_web(query, max_results=5)
+
+    # Подготовка системного промпта
+    if lang == "en":
+        base_prompt = BASE_SYSTEM_PROMPT_EN
+        style_hint = random.choice(STYLE_VARIATIONS_EN)
+    else:
+        base_prompt = BASE_SYSTEM_PROMPT_RU
+        style_hint = random.choice(STYLE_VARIATIONS_RU)
+
+    forced_user_message = build_forced_user_message(lang, original_text)
+
+    messages = [
+        {
+            "role": "system",
+            "content": base_prompt + "\n\nДоп. стиль:\n" + style_hint
+        }
+    ]
+
+    if web_context:
+        messages.append({
+            "role": "system",
+            "content": "Интернет-контекст:\n\n" + web_context
+        })
+
+    # Добавляем последние сообщения памяти
+    history = memory[user_id][-12:]
+    messages.extend(history)
+
+    # Добавляем текущее сообщение с жёстким указанием языка
+    messages.append({"role": "user", "content": forced_user_message})
+
+    try:
+        reply = await ask_openai(messages)
+
+        # Сохраняем в память нормальный вариант, а не форс-инструкцию
+        memory[user_id].append({"role": "user", "content": original_text})
         memory[user_id].append({"role": "assistant", "content": reply})
+        trim_memory(user_id)
 
-        # имитация "печатает"
-        await asyncio.sleep(random.uniform(0.5, 1.5))
-
+        await asyncio.sleep(random.uniform(0.4, 1.2))
         await message.answer(reply)
 
-        # 🖼️ иногда кидает мем
-        if random.random() < 0.3:
+        # Иногда мем
+        if random.random() < 0.12:
             await message.answer_photo(random.choice(MEMES))
 
     except Exception as e:
         print("Ошибка:", e)
-        await message.answer("Ой всё… ты даже бота сломал 🤦‍♀️")
+        traceback.print_exc()
 
-# ▶️ запуск
+        if lang == "en":
+            await message.answer("Well done. You broke the bot again. Impressive.")
+        else:
+            await message.answer("Ну всё. Ты опять сломал бота. Талант сомнительный, но яркий.")
+
+
+# =========================
+# ЗАПУСК
+# =========================
 async def main():
     print("Бот запущен...")
     bot = Bot(token=TELEGRAM_TOKEN)
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
