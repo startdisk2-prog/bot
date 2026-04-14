@@ -31,19 +31,7 @@ dp = Dispatcher()
 # =========================
 # ПАМЯТЬ
 # =========================
-# memory[user_id] = [{"role": "...", "content": "..."}]
 memory: Dict[int, List[dict]] = {}
-
-# =========================
-# МЕМЫ
-# =========================
-MEMES = [
-    "https://i.imgur.com/3GvwNBf.jpg",
-    "https://i.imgur.com/QpZ5G3x.jpg",
-    "https://i.imgur.com/2X7ZQ9k.jpg",
-    "https://i.imgur.com/WxNkK7J.jpg",
-    "https://i.imgur.com/8M0K6YB.jpg",
-]
 
 STYLE_VARIATIONS_RU = [
     "Отвечай естественно, живо и без шаблонов.",
@@ -61,9 +49,6 @@ STYLE_VARIATIONS_EN = [
     "Speak like a real person with attitude, not a robotic assistant.",
 ]
 
-# =========================
-# СИСТЕМНЫЕ ПРОМПТЫ
-# =========================
 BASE_SYSTEM_PROMPT_RU = """
 Ты — дерзкая, умная, язвительная девушка с очень живой манерой речи.
 
@@ -143,12 +128,8 @@ Format:
 - emojis are okay sometimes, not all the time
 """
 
-# =========================
-# ХЕЛПЕРЫ
-# =========================
 def detect_language(text: str) -> str:
     text = text.strip()
-
     cyr = len(re.findall(r"[А-Яа-яЁё]", text))
     lat = len(re.findall(r"[A-Za-z]", text))
 
@@ -156,7 +137,6 @@ def detect_language(text: str) -> str:
         return "en"
     if cyr > 0 and lat == 0:
         return "ru"
-
     if lat > cyr:
         return "en"
     return "ru"
@@ -180,10 +160,10 @@ def build_search_query(text: str, lang: str) -> str:
         if cleaned.lower() in ["news", "latest news", "what's happening", "what is happening"]:
             return "latest world news today"
         return cleaned
-    else:
-        if cleaned.lower() in ["новости", "что нового", "что происходит", "свежие новости"]:
-            return "последние мировые новости сегодня"
-        return cleaned
+
+    if cleaned.lower() in ["новости", "что нового", "что происходит", "свежие новости"]:
+        return "последние мировые новости сегодня"
+    return cleaned
 
 
 def search_web(query: str, max_results: int = 5) -> str:
@@ -226,6 +206,7 @@ def build_forced_user_message(lang: str, original_text: str) -> str:
             "Keep the same personality and attitude. "
             f"User message: {original_text}"
         )
+
     return (
         "Отвечай ТОЛЬКО на русском. "
         "Не используй английский без причины. "
@@ -235,10 +216,6 @@ def build_forced_user_message(lang: str, original_text: str) -> str:
 
 
 async def ask_openai(messages: List[dict]) -> str:
-    """
-    Сначала пробуем модель из OPENAI_MODEL.
-    Если она недоступна — мягкий откат на gpt-4o-mini.
-    """
     models_to_try = [OPENAI_MODEL]
 
     if OPENAI_MODEL != "gpt-4o-mini":
@@ -266,15 +243,12 @@ async def ask_openai(messages: List[dict]) -> str:
     raise last_error if last_error else RuntimeError("Пустой ответ от модели")
 
 
-# =========================
-# КОМАНДЫ
-# =========================
 @dp.message(CommandStart())
 async def start(message: Message):
     await message.answer(
         "Ну давай... удиви меня 🙄\n"
-        "Можешь писать на русском или English.\n"
-        "Команды: /reset /meme /news"
+        "Пиши на русском или English.\n"
+        "Команды: /reset /news"
     )
 
 
@@ -282,22 +256,16 @@ async def start(message: Message):
 async def reset_memory(message: Message):
     user_id = message.from_user.id
     memory[user_id] = []
-    await message.answer("Память почищена. Начинай заново, философ 😏")
-
-
-@dp.message(Command("meme"))
-async def meme(message: Message):
-    await message.answer_photo(random.choice(MEMES))
+    await message.answer("Память почищена. Начинай заново, мыслитель 😏")
 
 
 @dp.message(Command("news"))
 async def news(message: Message):
-    lang = "ru"
     query = "последние мировые новости сегодня"
     web_context = search_web(query, max_results=5)
 
     if not web_context:
-        await message.answer("Интернет сегодня тупит. Мир горит без меня 🔥")
+        await message.answer("Интернет сегодня в полуобмороке. Новостей не завезли 💀")
         return
 
     style_hint = random.choice(STYLE_VARIATIONS_RU)
@@ -310,7 +278,7 @@ async def news(message: Message):
         },
         {
             "role": "user",
-            "content": "Коротко и живо расскажи, что сейчас происходит в мире. На русском."
+            "content": "Коротко, умно и живо расскажи, что сейчас происходит в мире. На русском."
         }
     ]
 
@@ -323,13 +291,10 @@ async def news(message: Message):
         await message.answer("Даже новости устали от этого цирка 🤦‍♀️")
 
 
-# =========================
-# ОСНОВНОЙ ЧАТ
-# =========================
 @dp.message()
 async def chat(message: Message):
     if not message.text:
-        await message.answer("Текстом напиши. Я пока мысли по картинкам не читаю 😏")
+        await message.answer("Текстом напиши. Телепатию я пока не спонсирую.")
         return
 
     original_text = message.text.strip()
@@ -338,9 +303,8 @@ async def chat(message: Message):
 
     ensure_user_memory(user_id)
 
-    # Быстрые триггеры
     if any(x in lower_text for x in ["сиськ", "нюд", "nudes", "nude"]):
-        await message.answer("С фантазией у тебя, смотрю, прям бюджетный режим 😏")
+        await message.answer("С фантазией у тебя сегодня прям эконом-режим 😏")
         return
 
     if lower_text in ["кто ты", "who are you"]:
@@ -361,26 +325,22 @@ async def chat(message: Message):
 
     lang = detect_language(original_text)
 
-    # Иногда мелкий стёб, но не постоянно
     if random.random() < 0.08:
         if lang == "en":
             await message.answer("You're either cooking or hallucinating. Continue.")
         else:
             await message.answer("Либо ты сейчас гений, либо катастрофа. Продолжай.")
 
-    # Имитация набора текста
     try:
         await message.bot.send_chat_action(chat_id=message.chat.id, action="typing")
     except Exception:
         pass
 
-    # Ищем новости / интернет-контекст при необходимости
     web_context = ""
     if is_news_request(lower_text):
         query = build_search_query(original_text, lang)
         web_context = search_web(query, max_results=5)
 
-    # Подготовка системного промпта
     if lang == "en":
         base_prompt = BASE_SYSTEM_PROMPT_EN
         style_hint = random.choice(STYLE_VARIATIONS_EN)
@@ -403,27 +363,20 @@ async def chat(message: Message):
             "content": "Интернет-контекст:\n\n" + web_context
         })
 
-    # Добавляем последние сообщения памяти
     history = memory[user_id][-12:]
     messages.extend(history)
 
-    # Добавляем текущее сообщение с жёстким указанием языка
     messages.append({"role": "user", "content": forced_user_message})
 
     try:
         reply = await ask_openai(messages)
 
-        # Сохраняем в память нормальный вариант, а не форс-инструкцию
         memory[user_id].append({"role": "user", "content": original_text})
         memory[user_id].append({"role": "assistant", "content": reply})
         trim_memory(user_id)
 
         await asyncio.sleep(random.uniform(0.4, 1.2))
         await message.answer(reply)
-
-        # Иногда мем
-        if random.random() < 0.12:
-            await message.answer_photo(random.choice(MEMES))
 
     except Exception as e:
         print("Ошибка:", e)
@@ -435,9 +388,6 @@ async def chat(message: Message):
             await message.answer("Ну всё. Ты опять сломал бота. Талант сомнительный, но яркий.")
 
 
-# =========================
-# ЗАПУСК
-# =========================
 async def main():
     print("Бот запущен...")
     bot = Bot(token=TELEGRAM_TOKEN)
