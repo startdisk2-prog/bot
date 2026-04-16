@@ -29,7 +29,11 @@ TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
 TTS_VOICE = os.getenv("TTS_VOICE", "marin")
 VOICE_BY_DEFAULT = os.getenv("VOICE_BY_DEFAULT", "false").lower() == "true"
 
-DEFAULT_DATA_DIR = Path("/data") if Path("/data").exists() else (Path(__file__).resolve().parent / "data")
+BASE_DIR = Path(__file__).resolve().parent
+ASSETS_DIR = BASE_DIR / "assets"
+VIDEO_NOTE_FILE = ASSETS_DIR / "video_notes" / "yulia_note_01.mp4"
+
+DEFAULT_DATA_DIR = Path("/data") if Path("/data").exists() else (BASE_DIR / "data")
 DATA_DIR = Path(os.getenv("DATA_DIR", str(DEFAULT_DATA_DIR)))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -699,6 +703,15 @@ async def send_voice_reply(message: Message, text: str):
                 logging.exception("Не удалось удалить временный voice-файл")
 
 
+async def send_video_note_reply(message: Message):
+    if not VIDEO_NOTE_FILE.exists():
+        await message.answer(f"Не нашла файл кружка: {VIDEO_NOTE_FILE}")
+        return
+
+    note_file = FSInputFile(str(VIDEO_NOTE_FILE))
+    await message.answer_video_note(video_note=note_file)
+
+
 # =========================
 # CORE CHAT LOGIC
 # =========================
@@ -764,10 +777,16 @@ async def start(message: Message):
         "Команды:\n"
         "/voice_on — включить голосовые ответы\n"
         "/voice_off — выключить голосовые ответы\n"
-        "/clear_memory — очистить память\n\n"
+        "/clear_memory — очистить память\n"
+        "/circle — отправить тестовый кружок\n\n"
         "И да, голос здесь синтетический. AI-generated."
     )
     await message.answer(text)
+
+
+@dp.message(Command("circle"))
+async def circle(message: Message):
+    await send_video_note_reply(message)
 
 
 @dp.message(Command("voice_on"))
