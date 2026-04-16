@@ -3,7 +3,7 @@ from moviepy import VideoFileClip
 
 BASE_DIR = Path(__file__).resolve().parent
 
-INPUT_VIDEO = BASE_DIR / "assets" / "refs" / "yulia_video.mov"
+INPUT_VIDEO = BASE_DIR / "assets" / "video_notes" / "yulia_test_01.mp4"
 OUTPUT_VIDEO = BASE_DIR / "assets" / "video_notes" / "yulia_note_01.mp4"
 
 OUTPUT_VIDEO.parent.mkdir(parents=True, exist_ok=True)
