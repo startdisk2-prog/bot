@@ -889,7 +889,6 @@ def heygen_poll_video_sync(video_id: str) -> str:
 
         status = extract_status(response).lower().strip()
         video_url = extract_video_url(response)
-        error_text = extract_error_text(response)
 
         if status == "completed":
             if not video_url:
@@ -897,7 +896,10 @@ def heygen_poll_video_sync(video_id: str) -> str:
             return video_url
 
         if status == "failed":
-            raise ValueError(f"HeyGen failed: {error_text or response}")
+            raise ValueError(
+                "HeyGen failed. Full response: "
+                + json.dumps(response, ensure_ascii=False)
+            )
 
         time.sleep(HEYGEN_POLL_INTERVAL_SEC)
 
