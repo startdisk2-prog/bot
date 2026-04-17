@@ -920,7 +920,7 @@ def run_ffmpeg_sync(args: list[str]):
 
 def make_video_note_mp4_sync(src_mp4: Path, out_mp4: Path):
     video_filter = (
-        "crop=iw:iw:0:max((ih-iw)*0.22\\,0),"
+        "crop=iw:iw:0:max((ih-iw)*0.26\\,0),"
         "scale=640:640,"
         "setsar=1,"
         "format=yuv420p"
