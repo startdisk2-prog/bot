@@ -1,8 +1,13 @@
 import os
 import re
 import json
+import time
 import asyncio
 import logging
+import subprocess
+import urllib.parse
+import urllib.request
+import urllib.error
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
@@ -15,6 +20,7 @@ from openai import OpenAI
 # =========================
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("Не найден TELEGRAM_TOKEN")
@@ -22,16 +28,30 @@ if not TELEGRAM_TOKEN:
 if not OPENAI_API_KEY:
     raise ValueError("Не найден OPENAI_API_KEY")
 
+if not HEYGEN_API_KEY:
+    raise ValueError("Не найден HEYGEN_API_KEY")
+
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 MEMORY_MODEL = os.getenv("MEMORY_MODEL", "gpt-5.4-nano")
 TRANSCRIBE_MODEL = os.getenv("TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
 TTS_MODEL = os.getenv("TTS_MODEL", "gpt-4o-mini-tts")
 TTS_VOICE = os.getenv("TTS_VOICE", "marin")
-VOICE_BY_DEFAULT = os.getenv("VOICE_BY_DEFAULT", "false").lower() == "true"
+
+HEYGEN_AVATAR_ID = os.getenv("HEYGEN_AVATAR_ID", "9cda2942013043f18fe8fe10bfed20c6")
+HEYGEN_RESOLUTION = os.getenv("HEYGEN_RESOLUTION", "720p")
+HEYGEN_ASPECT_RATIO = os.getenv("HEYGEN_ASPECT_RATIO", "9:16")
+HEYGEN_EXPRESSIVENESS = os.getenv("HEYGEN_EXPRESSIVENESS", "medium")
+HEYGEN_MOTION_PROMPT = os.getenv(
+    "HEYGEN_MOTION_PROMPT",
+    "subtle natural head movement, blinking, calm confident presence, soft facial animation"
+)
+HEYGEN_POLL_INTERVAL_SEC = int(os.getenv("HEYGEN_POLL_INTERVAL_SEC", "5"))
+HEYGEN_TIMEOUT_SEC = int(os.getenv("HEYGEN_TIMEOUT_SEC", "300"))
+
+FFMPEG_BIN = os.getenv("FFMPEG_BIN", "ffmpeg")
 
 BASE_DIR = Path(__file__).resolve().parent
 ASSETS_DIR = BASE_DIR / "assets"
-VIDEO_NOTE_FILE = ASSETS_DIR / "video_notes" / "yulia_note_01.mp4"
 
 DEFAULT_DATA_DIR = Path("/data") if Path("/data").exists() else (BASE_DIR / "data")
 DATA_DIR = Path(os.getenv("DATA_DIR", str(DEFAULT_DATA_DIR)))
@@ -81,7 +101,6 @@ def get_user_state(user_id: int):
         db["users"][uid] = {
             "long_memory": "",
             "history": [],
-            "voice_enabled": VOICE_BY_DEFAULT,
             "turns_since_memory_refresh": 0,
         }
         save_db()
@@ -432,6 +451,23 @@ def needs_language_rewrite(reply: str, target_lang: str) -> bool:
     return False
 
 
+def safe_unlink(path: Path):
+    try:
+        if path.exists():
+            path.unlink()
+    except Exception:
+        logging.exception("Не удалось удалить временный файл: %s", path)
+
+
+def json_get(obj, *keys, default=None):
+    current = obj
+    for key in keys:
+        if not isinstance(current, dict) or key not in current:
+            return default
+        current = current[key]
+    return current
+
+
 # =========================
 # OPENAI CALLS
 # =========================
@@ -620,21 +656,21 @@ Write a concise memory summary in plain text, max 900 characters.
         save_db()
 
 
-def transcribe_voice_sync(file_path: Path) -> str:
-    with open(file_path, "rb") as audio_file:
+def transcribe_file_sync(file_path: Path) -> str:
+    with open(file_path, "rb") as media_file:
         transcript = client.audio.transcriptions.create(
             model=TRANSCRIBE_MODEL,
-            file=audio_file,
+            file=media_file,
         )
 
     text = getattr(transcript, "text", "").strip()
     if not text:
-        raise ValueError("Не удалось распознать голосовое сообщение")
+        raise ValueError("Не удалось распознать сообщение")
 
     return text
 
 
-def synthesize_voice_sync(text: str, out_path: Path):
+def synthesize_speech_sync(text: str, out_path: Path, response_format: str):
     voice_text = text[:3000]
 
     instructions = (
@@ -652,7 +688,7 @@ def synthesize_voice_sync(text: str, out_path: Path):
         voice=TTS_VOICE,
         input=voice_text,
         instructions=instructions,
-        response_format="opus",
+        response_format=response_format,
     ) as response:
         response.stream_to_file(out_path)
 
@@ -665,12 +701,266 @@ async def refresh_long_memory(user_id: int):
     await asyncio.to_thread(refresh_long_memory_sync, user_id)
 
 
-async def transcribe_voice(file_path: Path) -> str:
-    return await asyncio.to_thread(transcribe_voice_sync, file_path)
+async def transcribe_file(file_path: Path) -> str:
+    return await asyncio.to_thread(transcribe_file_sync, file_path)
 
 
-async def synthesize_voice(text: str, out_path: Path):
-    await asyncio.to_thread(synthesize_voice_sync, text, out_path)
+async def synthesize_speech(text: str, out_path: Path, response_format: str):
+    await asyncio.to_thread(synthesize_speech_sync, text, out_path, response_format)
+
+
+# =========================
+# HEYGEN + VIDEO NOTE HELPERS
+# =========================
+def heygen_headers(extra: dict | None = None) -> dict:
+    base = {
+        "Accept": "application/json",
+        "X-Api-Key": HEYGEN_API_KEY,
+    }
+    if extra:
+        base.update(extra)
+    return base
+
+
+def http_post_json_sync(url: str, payload: dict, headers: dict) -> dict:
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        url,
+        data=data,
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=120) as response:
+        raw = response.read().decode("utf-8")
+        return json.loads(raw)
+
+
+def http_post_binary_sync(url: str, binary_data: bytes, headers: dict) -> dict:
+    req = urllib.request.Request(
+        url,
+        data=binary_data,
+        headers=headers,
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=120) as response:
+        raw = response.read().decode("utf-8")
+        return json.loads(raw)
+
+
+def http_get_json_sync(url: str, headers: dict) -> dict:
+    req = urllib.request.Request(url, headers=headers, method="GET")
+    with urllib.request.urlopen(req, timeout=120) as response:
+        raw = response.read().decode("utf-8")
+        return json.loads(raw)
+
+
+def download_file_sync(url: str, out_path: Path):
+    req = urllib.request.Request(
+        url,
+        headers={"User-Agent": "Mozilla/5.0"},
+        method="GET",
+    )
+    with urllib.request.urlopen(req, timeout=300) as response, open(out_path, "wb") as f:
+        f.write(response.read())
+
+
+def extract_asset_id(payload: dict) -> str:
+    candidates = [
+        json_get(payload, "asset_id"),
+        json_get(payload, "id"),
+        json_get(payload, "data", "asset_id"),
+        json_get(payload, "data", "id"),
+    ]
+    for item in candidates:
+        if item:
+            return str(item)
+    return ""
+
+
+def extract_video_id(payload: dict) -> str:
+    candidates = [
+        json_get(payload, "video_id"),
+        json_get(payload, "id"),
+        json_get(payload, "data", "video_id"),
+        json_get(payload, "data", "id"),
+    ]
+    for item in candidates:
+        if item:
+            return str(item)
+    return ""
+
+
+def extract_status(payload: dict) -> str:
+    candidates = [
+        json_get(payload, "status"),
+        json_get(payload, "data", "status"),
+    ]
+    for item in candidates:
+        if item:
+            return str(item)
+    return ""
+
+
+def extract_video_url(payload: dict) -> str:
+    candidates = [
+        json_get(payload, "video_url"),
+        json_get(payload, "url"),
+        json_get(payload, "download_url"),
+        json_get(payload, "video_url_with_timestamp"),
+        json_get(payload, "data", "video_url"),
+        json_get(payload, "data", "url"),
+        json_get(payload, "data", "download_url"),
+        json_get(payload, "data", "video_url_with_timestamp"),
+    ]
+    for item in candidates:
+        if item:
+            return str(item)
+    return ""
+
+
+def extract_error_text(payload: dict) -> str:
+    candidates = [
+        json_get(payload, "error"),
+        json_get(payload, "message"),
+        json_get(payload, "msg"),
+        json_get(payload, "data", "error"),
+        json_get(payload, "data", "message"),
+        json_get(payload, "data", "msg"),
+    ]
+    for item in candidates:
+        if item:
+            return str(item)
+    return ""
+
+
+def heygen_upload_audio_asset_sync(mp3_path: Path) -> str:
+    with open(mp3_path, "rb") as f:
+        binary = f.read()
+
+    payload = http_post_binary_sync(
+        url="https://upload.heygen.com/v1/asset",
+        binary_data=binary,
+        headers=heygen_headers({"Content-Type": "audio/mpeg"}),
+    )
+
+    asset_id = extract_asset_id(payload)
+    if not asset_id:
+        raise ValueError(f"HeyGen не вернул asset_id: {payload}")
+
+    return asset_id
+
+
+def heygen_create_video_sync(audio_asset_id: str) -> str:
+    payload = {
+        "avatar_id": HEYGEN_AVATAR_ID,
+        "audio_asset_id": audio_asset_id,
+        "title": "Yulia dynamic video note",
+        "resolution": HEYGEN_RESOLUTION,
+        "aspect_ratio": HEYGEN_ASPECT_RATIO,
+        "expressiveness": HEYGEN_EXPRESSIVENESS,
+        "motion_prompt": HEYGEN_MOTION_PROMPT,
+    }
+
+    response = http_post_json_sync(
+        url="https://api.heygen.com/v2/videos",
+        payload=payload,
+        headers=heygen_headers({"Content-Type": "application/json"}),
+    )
+
+    video_id = extract_video_id(response)
+    if not video_id:
+        raise ValueError(f"HeyGen не вернул video_id: {response}")
+
+    return video_id
+
+
+def heygen_poll_video_sync(video_id: str) -> str:
+    started = time.time()
+
+    while True:
+        if time.time() - started > HEYGEN_TIMEOUT_SEC:
+            raise TimeoutError("HeyGen рендер не успел завершиться вовремя")
+
+        qs = urllib.parse.urlencode({"video_id": video_id})
+        response = http_get_json_sync(
+            url=f"https://api.heygen.com/v1/video_status.get?{qs}",
+            headers=heygen_headers(),
+        )
+
+        status = extract_status(response).lower().strip()
+        video_url = extract_video_url(response)
+        error_text = extract_error_text(response)
+
+        if status == "completed":
+            if not video_url:
+                raise ValueError(f"HeyGen вернул completed, но без video_url: {response}")
+            return video_url
+
+        if status == "failed":
+            raise ValueError(f"HeyGen failed: {error_text or response}")
+
+        time.sleep(HEYGEN_POLL_INTERVAL_SEC)
+
+
+def run_ffmpeg_sync(args: list[str]):
+    try:
+        completed = subprocess.run(
+            args,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        raise RuntimeError("ffmpeg не найден. Добавь ffmpeg в Railway environment.")
+
+    if completed.returncode != 0:
+        raise RuntimeError(f"ffmpeg ошибка:\n{completed.stderr}")
+
+
+def make_video_note_mp4_sync(src_mp4: Path, out_mp4: Path):
+    vf = "crop=min(iw\\,ih):min(iw\\,ih),scale=640:640,setsar=1,format=yuv420p"
+
+    args = [
+        FFMPEG_BIN,
+        "-y",
+        "-i", str(src_mp4),
+        "-vf", vf,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "23",
+        "-pix_fmt", "yuv420p",
+        "-c:a", "aac",
+        "-b:a", "128k",
+        "-movflags", "+faststart",
+        str(out_mp4),
+    ]
+    run_ffmpeg_sync(args)
+
+
+async def generate_dynamic_video_note_file(reply_text: str, file_stem: str) -> Path:
+    reply_lang = detect_reply_language(reply_text)
+    spoken_text = await asyncio.to_thread(make_tts_script_sync, reply_text, reply_lang)
+
+    mp3_path = TEMP_DIR / f"{file_stem}.mp3"
+    heygen_raw_mp4 = TEMP_DIR / f"{file_stem}_heygen.mp4"
+    note_mp4 = TEMP_DIR / f"{file_stem}_note.mp4"
+
+    try:
+        await synthesize_speech(spoken_text, mp3_path, "mp3")
+
+        audio_asset_id = await asyncio.to_thread(heygen_upload_audio_asset_sync, mp3_path)
+        video_id = await asyncio.to_thread(heygen_create_video_sync, audio_asset_id)
+        video_url = await asyncio.to_thread(heygen_poll_video_sync, video_id)
+
+        await asyncio.to_thread(download_file_sync, video_url, heygen_raw_mp4)
+        await asyncio.to_thread(make_video_note_mp4_sync, heygen_raw_mp4, note_mp4)
+
+        return note_mp4
+
+    finally:
+        safe_unlink(mp3_path)
+        safe_unlink(heygen_raw_mp4)
 
 
 # =========================
@@ -688,28 +978,25 @@ async def send_voice_reply(message: Message, text: str):
         reply_lang = detect_reply_language(text)
         spoken_text = await asyncio.to_thread(make_tts_script_sync, text, reply_lang)
 
-        await synthesize_voice(spoken_text, out_path)
+        await synthesize_speech(spoken_text, out_path, "opus")
 
         voice_file = FSInputFile(str(out_path))
-        await message.answer_voice(
-            voice=voice_file,
-            caption="AI voice"
-        )
+        await message.answer_voice(voice=voice_file)
     finally:
-        if out_path.exists():
-            try:
-                out_path.unlink()
-            except Exception:
-                logging.exception("Не удалось удалить временный voice-файл")
+        safe_unlink(out_path)
 
 
-async def send_video_note_reply(message: Message):
-    if not VIDEO_NOTE_FILE.exists():
-        await message.answer(f"Не нашла файл кружка: {VIDEO_NOTE_FILE}")
-        return
+async def send_dynamic_video_note_reply(message: Message, text: str):
+    file_stem = f"reply_{message.chat.id}_{message.message_id}"
+    note_path: Path | None = None
 
-    note_file = FSInputFile(str(VIDEO_NOTE_FILE))
-    await message.answer_video_note(video_note=note_file)
+    try:
+        note_path = await generate_dynamic_video_note_file(text, file_stem)
+        note_file = FSInputFile(str(note_path))
+        await message.answer_video_note(video_note=note_file, length=640)
+    finally:
+        if note_path:
+            safe_unlink(note_path)
 
 
 # =========================
@@ -741,22 +1028,21 @@ async def process_user_message(message: Message, user_text: str, source: str = "
     state["history"] = trim_history(state["history"], 20)
     save_db()
 
-    if source == "voice":
-        try:
+    try:
+        if source == "voice":
             await send_voice_reply(message, reply)
-        except Exception:
-            logging.exception("Ошибка TTS")
-            await message.answer("С голосом сейчас перекос, так что держи текст.")
+        elif source == "video_note":
+            await send_dynamic_video_note_reply(message, reply)
+        else:
             await send_text_reply(message, reply)
-    else:
-        await send_text_reply(message, reply)
-
-        if state.get("voice_enabled", False):
-            try:
-                await send_voice_reply(message, reply)
-            except Exception:
-                logging.exception("Ошибка TTS")
-                await message.answer("Голос сейчас отвалился. Потерпишь текстом.")
+    except Exception as e:
+        logging.exception("Ошибка отправки ответа")
+        if source == "voice":
+            await message.answer(f"С голосом сейчас перекос: {e}")
+        elif source == "video_note":
+            await message.answer(f"С кружком сейчас перекос: {e}")
+        else:
+            await message.answer(f"С ответом сейчас перекос: {e}")
 
     if state.get("turns_since_memory_refresh", 0) >= 4:
         try:
@@ -774,35 +1060,27 @@ async def process_user_message(message: Message, user_text: str, source: str = "
 async def start(message: Message):
     text = (
         "Ну привет. Я Юля.\n\n"
+        "Как я сейчас отвечаю:\n"
+        "текст -> текстом\n"
+        "voice -> голосом\n"
+        "кружок -> кружком\n\n"
         "Команды:\n"
-        "/voice_on — включить голосовые ответы\n"
-        "/voice_off — выключить голосовые ответы\n"
-        "/clear_memory — очистить память\n"
-        "/circle — отправить тестовый кружок\n\n"
-        "И да, голос здесь синтетический. AI-generated."
+        "/circle — тестовый живой кружок\n"
+        "/clear_memory — очистить память"
     )
     await message.answer(text)
 
 
 @dp.message(Command("circle"))
 async def circle(message: Message):
-    await send_video_note_reply(message)
-
-
-@dp.message(Command("voice_on"))
-async def voice_on(message: Message):
-    state = get_user_state(message.from_user.id)
-    state["voice_enabled"] = True
-    save_db()
-    await message.answer("Голос включен. Теперь меня будет не только видно, но и слышно.")
-
-
-@dp.message(Command("voice_off"))
-async def voice_off(message: Message):
-    state = get_user_state(message.from_user.id)
-    state["voice_enabled"] = False
-    save_db()
-    await message.answer("Голос выключен. Придётся читать глазами.")
+    try:
+        await send_dynamic_video_note_reply(
+            message,
+            "Ну привет. Это тестовый кружок. Смотрю, как я у тебя выгляжу."
+        )
+    except Exception as e:
+        logging.exception("Ошибка тестового кружка")
+        await message.answer(f"Тестовый кружок сейчас сломался: {e}")
 
 
 @dp.message(Command("clear_memory"))
@@ -820,13 +1098,13 @@ async def clear_memory(message: Message):
 # =========================
 @dp.message(F.voice)
 async def handle_voice(message: Message):
-    in_path = TEMP_DIR / f"input_{message.chat.id}_{message.message_id}.ogg"
+    in_path = TEMP_DIR / f"input_voice_{message.chat.id}_{message.message_id}.ogg"
 
     try:
         file_info = await message.bot.get_file(message.voice.file_id)
         await message.bot.download(file_info, destination=in_path)
 
-        user_text = await transcribe_voice(in_path)
+        user_text = await transcribe_file(in_path)
         await process_user_message(message, user_text, source="voice")
 
     except Exception as e:
@@ -834,11 +1112,41 @@ async def handle_voice(message: Message):
         await message.answer(f"Голосовое сейчас споткнулось: {e}")
 
     finally:
-        if in_path.exists():
-            try:
-                in_path.unlink()
-            except Exception:
-                logging.exception("Не удалось удалить временный входной аудио-файл")
+        safe_unlink(in_path)
+
+
+# =========================
+# VIDEO / VIDEO NOTE HANDLER
+# =========================
+@dp.message(F.video_note | F.video)
+async def handle_video_like(message: Message):
+    in_path = TEMP_DIR / f"input_video_{message.chat.id}_{message.message_id}.mp4"
+
+    try:
+        file_id = None
+
+        if message.video_note:
+            file_id = message.video_note.file_id
+            logging.info("Пойман входящий video_note")
+        elif message.video:
+            file_id = message.video.file_id
+            logging.info("Пойман входящий video")
+        else:
+            await message.answer("Видео пришло как-то криво. Бывает.")
+            return
+
+        file_info = await message.bot.get_file(file_id)
+        await message.bot.download(file_info, destination=in_path)
+
+        user_text = await transcribe_file(in_path)
+        await process_user_message(message, user_text, source="video_note")
+
+    except Exception as e:
+        logging.exception("Ошибка обработки видео/кружка")
+        await message.answer(f"Кружок сейчас споткнулся: {e}")
+
+    finally:
+        safe_unlink(in_path)
 
 
 # =========================
