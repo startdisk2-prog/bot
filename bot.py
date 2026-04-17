@@ -1076,18 +1076,9 @@ async def start(message: Message):
     )
     await message.answer(text)
 
-
 @dp.message(Command("circle"))
 async def circle(message: Message):
-    try:
-        await send_dynamic_video_note_reply(
-            message,
-            "Ну привет. Это тестовый кружок. Смотрю, как я у тебя выгляжу."
-        )
-    except Exception as e:
-        logging.exception("Ошибка тестового кружка")
-        await message.answer(f"Тестовый кружок сейчас сломался: {e}")
-
+    await message.answer("Кружки временно выключены. Не хочу сжигать тебе деньги на HeyGen.")
 
 @dp.message(Command("clear_memory"))
 async def clear_memory(message: Message):
@@ -1146,7 +1137,7 @@ async def handle_video_like(message: Message):
         await message.bot.download(file_info, destination=in_path)
 
         user_text = await transcribe_file(in_path)
-        await process_user_message(message, user_text, source="video_note")
+        await process_user_message(message, user_text, source="voice")
 
     except Exception as e:
         logging.exception("Ошибка обработки видео/кружка")
@@ -1154,7 +1145,6 @@ async def handle_video_like(message: Message):
 
     finally:
         safe_unlink(in_path)
-
 
 # =========================
 # TEXT HANDLER
