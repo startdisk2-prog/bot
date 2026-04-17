@@ -919,20 +919,18 @@ def run_ffmpeg_sync(args: list[str]):
 
 
 def make_video_note_mp4_sync(src_mp4: Path, out_mp4: Path):
-    filter_complex = (
-        "[0:v]scale=640:640:force_original_aspect_ratio=increase,"
-        "crop=640:640,boxblur=20:1[bg];"
-        "[0:v]scale=640:640:force_original_aspect_ratio=decrease[fg];"
-        "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,format=yuv420p[v]"
+    video_filter = (
+        "crop=iw:iw:0:max((ih-iw)*0.38\\,0),"
+        "scale=640:640,"
+        "setsar=1,"
+        "format=yuv420p"
     )
 
     args = [
         FFMPEG_BIN,
         "-y",
         "-i", str(src_mp4),
-        "-filter_complex", filter_complex,
-        "-map", "[v]",
-        "-map", "0:a?",
+        "-vf", video_filter,
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "23",
@@ -943,7 +941,6 @@ def make_video_note_mp4_sync(src_mp4: Path, out_mp4: Path):
         str(out_mp4),
     ]
     run_ffmpeg_sync(args)
-
 
 async def generate_dynamic_video_note_file(reply_text: str, file_stem: str) -> Path:
     reply_lang = detect_reply_language(reply_text)
