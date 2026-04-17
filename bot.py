@@ -1,3 +1,4 @@
+
 import os
 import re
 import json
@@ -7,7 +8,6 @@ import logging
 import subprocess
 import urllib.parse
 import urllib.request
-import urllib.error
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
@@ -919,13 +919,20 @@ def run_ffmpeg_sync(args: list[str]):
 
 
 def make_video_note_mp4_sync(src_mp4: Path, out_mp4: Path):
-    vf = "crop=min(iw\\,ih):min(iw\\,ih),scale=640:640,setsar=1,format=yuv420p"
+    filter_complex = (
+        "[0:v]scale=640:640:force_original_aspect_ratio=increase,"
+        "crop=640:640,boxblur=20:1[bg];"
+        "[0:v]scale=640:640:force_original_aspect_ratio=decrease[fg];"
+        "[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,format=yuv420p[v]"
+    )
 
     args = [
         FFMPEG_BIN,
         "-y",
         "-i", str(src_mp4),
-        "-vf", vf,
+        "-filter_complex", filter_complex,
+        "-map", "[v]",
+        "-map", "0:a?",
         "-c:v", "libx264",
         "-preset", "veryfast",
         "-crf", "23",
@@ -1118,7 +1125,8 @@ async def handle_voice(message: Message):
 # =========================
 # VIDEO / VIDEO NOTE HANDLER
 # =========================
-@dp.message(F.video_note | F.video)
+@dp.message(F.video_note)
+@dp.message(F.video)
 async def handle_video_like(message: Message):
     in_path = TEMP_DIR / f"input_video_{message.chat.id}_{message.message_id}.mp4"
 
