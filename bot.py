@@ -1,4 +1,3 @@
-
 import os
 import re
 import json
@@ -506,7 +505,9 @@ def search_eis_tenders(query: str, limit: int = 5):
 
     try:
         payload = response.json()
+        logging.info("DAMIA RAW RESPONSE: %s", json.dumps(payload, ensure_ascii=False)[:3000])
     except Exception:
+        logging.info("DAMIA RAW TEXT: %s", response.text[:3000])
         payload = json.loads(response.text)
 
     if isinstance(payload, dict):
