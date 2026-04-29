@@ -1,4 +1,3 @@
-
 import os
 import re
 import json
@@ -421,6 +420,11 @@ def extract_eis_query(text: str) -> str:
 
     t = re.sub(r"[,.;:!?()\[\]{}]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
+
+    # Иногда после очистки фразы вроде "найди" может оставаться лишняя буква:
+    # "ы монтаж кабельных линий". Убираем такой мусор только в начале запроса.
+    t = re.sub(r"^[ыи]\s+", "", t).strip()
+
     return t
 
 
@@ -1369,3 +1373,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
