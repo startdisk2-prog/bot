@@ -1,3 +1,4 @@
+
 import os
 import re
 import json
@@ -22,6 +23,7 @@ from openai import OpenAI
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY")
+DAMIA_API_KEY = os.getenv("DAMIA_API_KEY")
 
 if not TELEGRAM_TOKEN:
     raise ValueError("Не найден TELEGRAM_TOKEN")
@@ -31,6 +33,9 @@ if not OPENAI_API_KEY:
 
 if not HEYGEN_API_KEY:
     raise ValueError("Не найден HEYGEN_API_KEY")
+
+if not DAMIA_API_KEY:
+    raise ValueError("Не найден DAMIA_API_KEY")
 
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
 MEMORY_MODEL = os.getenv("MEMORY_MODEL", "gpt-5.4-nano")
@@ -384,7 +389,8 @@ def split_text(text: str, max_len: int = 3900):
 
 
 # =========================
-# EIS TENDER SEARCH
+# =========================
+# EIS TENDER SEARCH THROUGH DAMIA API
 # =========================
 def is_eis_tender_request(text: str) -> bool:
     t = (text or "").lower()
@@ -418,71 +424,114 @@ def extract_eis_query(text: str) -> str:
     return t
 
 
+def normalize_damia_items(payload):
+    if isinstance(payload, list):
+        return payload
+
+    if not isinstance(payload, dict):
+        return []
+
+    possible_keys = [
+        "data", "result", "results", "items", "zakupki", "Закупки",
+        "list", "rows", "documents"
+    ]
+
+    for key in possible_keys:
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            nested = normalize_damia_items(value)
+            if nested:
+                return nested
+
+    for value in payload.values():
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            return value
+
+    return []
+
+
+def get_first_value(obj: dict, keys: list[str], default: str = "") -> str:
+    for key in keys:
+        if key in obj and obj[key] is not None:
+            value = obj[key]
+            if isinstance(value, dict):
+                for nested_key in ["Название", "Наименование", "Сумма", "value", "name"]:
+                    if nested_key in value and value[nested_key] is not None:
+                        return str(value[nested_key]).strip()
+            else:
+                return str(value).strip()
+    return default
+
+
+def build_zakupki_url(reg_number: str, fz: str = "") -> str:
+    reg_number = str(reg_number or "").strip()
+    fz = str(fz or "").strip()
+
+    if fz == "223":
+        return f"https://zakupki.gov.ru/epz/order/notice/notice223/common-info.html?regNumber={reg_number}"
+
+    if fz == "615":
+        return f"https://zakupki.gov.ru/epz/order/notice/notice615/common-info.html?regNumber={reg_number}"
+
+    return f"https://zakupki.gov.ru/epz/order/notice/ea20/view/common-info.html?regNumber={reg_number}"
+
+
 def search_eis_tenders(query: str, limit: int = 5):
-    encoded_query = urllib.parse.quote(query)
-
-    url = (
-        "https://zakupki.gov.ru/epz/order/extendedsearch/results.html"
-        f"?searchString={encoded_query}"
-        "&morphology=on"
-        "&fz44=on"
-        "&fz223=on"
-        "&af=on"
-        "&ca=on"
-        "&pc=on"
-        "&sortBy=UPDATE_DATE"
-        "&recordsPerPage=_10"
-    )
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    params = {
+        "q": query,
+        "status": "1",
+        "page": "1",
+        "key": DAMIA_API_KEY,
     }
 
-    last_error = None
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "application/json",
+    }
 
-    for _ in range(3):
-        try:
-            response = requests.get(url, headers=headers, timeout=60)
-            response.raise_for_status()
-            break
-        except Exception as e:
-            last_error = e
-            time.sleep(3)
-    else:
-        raise last_error
+    response = requests.get(
+        "https://api.damia.ru/zakupki/zsearch",
+        params=params,
+        headers=headers,
+        timeout=40,
+    )
+    response.raise_for_status()
 
-    soup = BeautifulSoup(response.text, "html.parser")
+    try:
+        payload = response.json()
+    except Exception:
+        payload = json.loads(response.text)
 
+    if isinstance(payload, dict):
+        error_text = get_first_value(payload, ["error", "Ошибка", "message", "msg"], "")
+        if error_text and not normalize_damia_items(payload):
+            raise ValueError(error_text)
+
+    items = normalize_damia_items(payload)
     tenders = []
 
-    for item in soup.select(".search-registry-entry-block"):
-        title_el = (
-            item.select_one(".registry-entry__body-value")
-            or item.select_one(".registry-entry__header-mid__text")
-        )
-
-        link_el = item.select_one("a[href*='noticeId']") or item.select_one("a[href]")
-
-        if not title_el or not link_el:
+    for item in items:
+        if not isinstance(item, dict):
             continue
 
-        title = title_el.get_text(" ", strip=True)
-        link = link_el.get("href", "")
+        reg_number = get_first_value(item, ["РегНомер", "regn", "regNumber", "reg_number", "noticeNumber"])
+        if not reg_number:
+            continue
 
-        if link.startswith("/"):
-            link = "https://zakupki.gov.ru" + link
-
-        price_el = item.select_one(".price-block__value")
-        price = price_el.get_text(" ", strip=True) if price_el else "Цена не указана"
-
-        stage_text = item.get_text(" ", strip=True)
+        fz = get_first_value(item, ["ФЗ", "fz", "law", "lawNumber"])
+        title = get_first_value(item, ["Продукт", "Название", "Наименование", "name", "title"], "Без названия")
+        price = get_first_value(item, ["Цена", "НМЦК", "Сумма", "price", "maxPrice", "initialPrice"], "Цена не указана")
+        pub_date = get_first_value(item, ["ДатаПубл", "date", "publishDate", "publicationDate"], "")
 
         tenders.append({
             "title": title,
             "price": price,
-            "stage": stage_text[:500],
-            "url": link
+            "fz": fz,
+            "pub_date": pub_date,
+            "reg_number": reg_number,
+            "url": build_zakupki_url(reg_number, fz),
         })
 
         if len(tenders) >= limit:
@@ -493,20 +542,28 @@ def search_eis_tenders(query: str, limit: int = 5):
 
 def build_eis_answer(query: str, tenders: list[dict]) -> str:
     if not tenders:
-        return "По такому запросу активных закупок не нашла. ЕИС иногда молчит так, будто его обидели."
+        return "По такому запросу активных закупок не нашла."
 
     text = f"Нашла в ЕИС по запросу: {query}\n\n"
 
     for tender in tenders:
-        text += (
-            f"🔹 {tender['title']}\n"
-            f"Цена: {tender['price']}\n"
-            f"{tender['url']}\n\n"
-        )
+        extra = []
+        if tender.get("fz"):
+            extra.append(f"ФЗ: {tender['fz']}")
+        if tender.get("pub_date"):
+            extra.append(f"Опубликовано: {tender['pub_date']}")
+        if tender.get("reg_number"):
+            extra.append(f"№ {tender['reg_number']}")
+
+        meta = " | ".join(extra)
+
+        text += f"🔹 {tender['title']}\n"
+        if meta:
+            text += f"{meta}\n"
+        text += f"Цена: {tender['price']}\n"
+        text += f"{tender['url']}\n\n"
 
     return text.strip()
-
-
 def build_turn_rules(user_text: str, reply_lang: str, use_web_search: bool) -> str:
     lang_line = "Reply in English." if reply_lang == "en" else "Reply in Russian."
 
@@ -1157,7 +1214,7 @@ async def process_user_message(message: Message, user_text: str, source: str = "
         except Exception:
             logging.exception("Ошибка поиска в ЕИС")
             await message.answer(
-                "ЕИС сейчас не отвечает. "
+                "API DaMIA сейчас не отдал закупки. "
                 "Готовые лоты получить не удалось. Попробуй ещё раз через минуту."
             )
             return
@@ -1312,4 +1369,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
