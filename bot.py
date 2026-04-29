@@ -1,4 +1,3 @@
-
 import os
 import re
 import json
@@ -8,8 +7,10 @@ import logging
 import subprocess
 import urllib.parse
 import urllib.request
+import requests
 from pathlib import Path
 
+from bs4 import BeautifulSoup
 from aiogram import Bot, Dispatcher, F
 from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, FSInputFile
@@ -380,6 +381,120 @@ def split_text(text: str, max_len: int = 3900):
                 start += max_len
 
     return final_chunks
+
+
+# =========================
+# EIS TENDER SEARCH
+# =========================
+def is_eis_tender_request(text: str) -> bool:
+    t = (text or "").lower()
+    return (
+        "еис" in t
+        or "тендер" in t
+        or "тендр" in t
+        or "закупк" in t
+        or "найди тендер" in t
+        or "найди закупку" in t
+    )
+
+
+def extract_eis_query(text: str) -> str:
+    t = normalize_text(text.lower())
+
+    remove_phrases = [
+        "найди в еис", "найди еис", "найди тендер на", "найди тендер",
+        "найди тендр на", "найди тендр", "найди закупку на", "найди закупку",
+        "тендер на", "тендр на", "закупку на", "который опубликован",
+        "которая опубликована", "которые опубликованы", "ждет заявки", "ждёт заявки",
+        "ждет заявок", "ждёт заявок", "прием заявок", "приём заявок",
+        "регион любой", "любой регион", "цена любая", "любая цена", "в еис"
+    ]
+
+    for phrase in remove_phrases:
+        t = t.replace(phrase, " ")
+
+    t = re.sub(r"[,.;:!?()\[\]{}]", " ", t)
+    t = re.sub(r"\s+", " ", t).strip()
+    return t
+
+
+def search_eis_tenders(query: str, limit: int = 5):
+    encoded_query = urllib.parse.quote(query)
+
+    url = (
+        "https://zakupki.gov.ru/epz/order/extendedsearch/results.html"
+        f"?searchString={encoded_query}"
+        "&morphology=on"
+        "&fz44=on"
+        "&fz223=on"
+        "&af=on"
+        "&ca=on"
+        "&pc=on"
+        "&sortBy=UPDATE_DATE"
+        "&recordsPerPage=_10"
+    )
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                      "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    }
+
+    response = requests.get(url, headers=headers, timeout=25)
+    response.raise_for_status()
+
+    soup = BeautifulSoup(response.text, "html.parser")
+
+    tenders = []
+
+    for item in soup.select(".search-registry-entry-block"):
+        title_el = (
+            item.select_one(".registry-entry__body-value")
+            or item.select_one(".registry-entry__header-mid__text")
+        )
+
+        link_el = item.select_one("a[href*='noticeId']") or item.select_one("a[href]")
+
+        if not title_el or not link_el:
+            continue
+
+        title = title_el.get_text(" ", strip=True)
+        link = link_el.get("href", "")
+
+        if link.startswith("/"):
+            link = "https://zakupki.gov.ru" + link
+
+        price_el = item.select_one(".price-block__value")
+        price = price_el.get_text(" ", strip=True) if price_el else "Цена не указана"
+
+        stage_text = item.get_text(" ", strip=True)
+
+        tenders.append({
+            "title": title,
+            "price": price,
+            "stage": stage_text[:500],
+            "url": link
+        })
+
+        if len(tenders) >= limit:
+            break
+
+    return tenders
+
+
+def build_eis_answer(query: str, tenders: list[dict]) -> str:
+    if not tenders:
+        return "По такому запросу активных закупок не нашла. ЕИС иногда молчит так, будто его обидели."
+
+    text = f"Нашла в ЕИС по запросу: {query}\n\n"
+
+    for tender in tenders:
+        text += (
+            f"🔹 {tender['title']}\n"
+            f"Цена: {tender['price']}\n"
+            f"{tender['url']}\n\n"
+        )
+
+    return text.strip()
 
 
 def build_turn_rules(user_text: str, reply_lang: str, use_web_search: bool) -> str:
@@ -1018,6 +1133,25 @@ async def process_user_message(message: Message, user_text: str, source: str = "
         await message.answer("Слова закончились?")
         return
 
+    if is_eis_tender_request(user_text):
+        query = extract_eis_query(user_text)
+
+        if not query:
+            await message.answer("Напиши, что именно искать в ЕИС. Например: монтаж кабельных линий")
+            return
+
+        await message.answer(f"Ищу в ЕИС: {query}")
+
+        try:
+            tenders = await asyncio.to_thread(search_eis_tenders, query, 5)
+        except Exception as e:
+            logging.exception("Ошибка поиска в ЕИС")
+            await message.answer(f"ЕИС сейчас не отдал поиск нормально: {e}")
+            return
+
+        await send_text_reply(message, build_eis_answer(query, tenders))
+        return
+
     state["history"].append({"role": "user", "content": user_text})
     state["history"] = trim_history(state["history"], 20)
     state["turns_since_memory_refresh"] = state.get("turns_since_memory_refresh", 0) + 1
@@ -1165,3 +1299,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
