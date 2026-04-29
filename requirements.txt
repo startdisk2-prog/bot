@@ -1,2 +1,4 @@
 aiogram
 openai
+requests
+beautifulsoup4
