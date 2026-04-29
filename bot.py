@@ -439,8 +439,18 @@ def search_eis_tenders(query: str, limit: int = 5):
                       "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
 
-    response = requests.get(url, headers=headers, timeout=25)
-    response.raise_for_status()
+    last_error = None
+
+for _ in range(3):
+    try:
+        response = requests.get(url, headers=headers, timeout=60)
+        response.raise_for_status()
+        break
+    except Exception as e:
+        last_error = e
+        time.sleep(3)
+else:
+    raise last_error
 
     soup = BeautifulSoup(response.text, "html.parser")
 
@@ -1176,13 +1186,12 @@ async def process_user_message(message: Message, user_text: str, source: str = "
         else:
             await send_text_reply(message, reply)
     except Exception as e:
-        logging.exception("Ошибка отправки ответа")
+        logging.exception("Ошибка поиска в ЕИС")
         if source == "voice":
-            await message.answer(f"С голосом сейчас перекос: {e}")
-        elif source == "video_note":
-            await message.answer(f"С кружком сейчас перекос: {e}")
-        else:
-            await message.answer(f"С ответом сейчас перекос: {e}")
+            await message.answer("ЕИС сейчас не отвечает. "
+        "Готовые лоты получить не удалось. Попробуй ещё раз через минуту."
+    )
+    return
 
     if state.get("turns_since_memory_refresh", 0) >= 4:
         try:
