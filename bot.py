@@ -388,86 +388,211 @@ def split_text(text: str, max_len: int = 3900):
 
 
 # =========================
-# =========================
 # EIS TENDER SEARCH THROUGH DAMIA API
 # =========================
 def is_eis_tender_request(text: str) -> bool:
-    t = (text or "").lower()
-    return (
-        "еис" in t
-        or "тендер" in t
-        or "тендр" in t
-        or "закупк" in t
-        or "найди тендер" in t
-        or "найди закупку" in t
-    )
+    t = (text or "").lower().replace("ё", "е")
+    return bool(re.search(r"\b(еис|тендер\w*|тендр\w*|закупк\w*)\b", t))
+
+
+# DaMIA принимает код региона, а не город текстом.
+# Список можно расширять без изменения остальной логики.
+REGION_FILTERS = [
+    ("77", "Москва", [r"\bмосква\b", r"\bмоскве\b", r"\bмоскву\b", r"\bмск\b"]),
+    ("78", "Санкт-Петербург", [r"\bсанкт[-\s]?петербург\w*\b", r"\bпетербург\w*\b", r"\bспб\b"]),
+    ("50", "Московская область", [r"\bмосковск\w*\s+обл\w*\b", r"\bподмосков\w*\b"]),
+    ("47", "Ленинградская область", [r"\bленинградск\w*\s+обл\w*\b"]),
+    ("54", "Новосибирская область", [r"\bновосибирск\w*\b", r"\bнсо\b"]),
+    ("55", "Омская область", [r"\bомск\w*\b"]),
+    ("70", "Томская область", [r"\bтомск\w*\b"]),
+    ("42", "Кемеровская область", [r"\bкемеров\w*\b", r"\bкузбасс\w*\b"]),
+    ("24", "Красноярский край", [r"\bкрасноярск\w*\b"]),
+    ("22", "Алтайский край", [r"\bалтайск\w*\s+кра\w*\b", r"\bбарнаул\w*\b"]),
+    ("66", "Свердловская область", [r"\bекатеринбург\w*\b", r"\bсвердловск\w*\s+обл\w*\b"]),
+    ("74", "Челябинская область", [r"\bчелябинск\w*\b"]),
+    ("72", "Тюменская область", [r"\bтюмен\w*\b"]),
+    ("86", "Ханты-Мансийский автономный округ", [r"\bханты[-\s]?мансийск\w*\b", r"\bхмао\b", r"\bюгра\b"]),
+    ("89", "Ямало-Ненецкий автономный округ", [r"\bямало[-\s]?ненец\w*\b", r"\bянао\b"]),
+    ("59", "Пермский край", [r"\bперм\w*\b"]),
+    ("02", "Республика Башкортостан", [r"\bбашкортостан\w*\b", r"\bбашкир\w*\b", r"\bуф\w*\b"]),
+    ("16", "Республика Татарстан", [r"\bтатарстан\w*\b", r"\bказан\w*\b"]),
+    ("63", "Самарская область", [r"\bсамар\w*\b", r"\bтольятт\w*\b"]),
+    ("64", "Саратовская область", [r"\bсаратов\w*\b"]),
+    ("34", "Волгоградская область", [r"\bволгоград\w*\b"]),
+    ("61", "Ростовская область", [r"\bростов\w*\b", r"\bростов[-\s]?на[-\s]?дону\b"]),
+    ("23", "Краснодарский край", [r"\bкраснодар\w*\b", r"\bсоч\w*\b", r"\bанап\w*\b"]),
+    ("26", "Ставропольский край", [r"\bставрополь\w*\b"]),
+    ("52", "Нижегородская область", [r"\bнижн\w*\s+новгород\w*\b", r"\bнижегородск\w*\b"]),
+    ("21", "Чувашская Республика", [r"\bчуваш\w*\b", r"\bчебоксар\w*\b"]),
+    ("12", "Республика Марий Эл", [r"\bмарий\s+эл\b", r"\bйошкар[-\s]?ол\w*\b"]),
+    ("13", "Республика Мордовия", [r"\bмордов\w*\b", r"\bсаранск\w*\b"]),
+    ("18", "Удмуртская Республика", [r"\bудмурт\w*\b", r"\bижевск\w*\b"]),
+    ("31", "Белгородская область", [r"\bбелгород\w*\b"]),
+    ("32", "Брянская область", [r"\bбрянск\w*\b"]),
+    ("33", "Владимирская область", [r"\bвладимир\w*\b"]),
+    ("36", "Воронежская область", [r"\bворонеж\w*\b"]),
+    ("37", "Ивановская область", [r"\bиванов\w*\b"]),
+    ("40", "Калужская область", [r"\bкалуг\w*\b"]),
+    ("44", "Костромская область", [r"\bкостром\w*\b"]),
+    ("46", "Курская область", [r"\bкурск\w*\b"]),
+    ("48", "Липецкая область", [r"\bлипецк\w*\b"]),
+    ("57", "Орловская область", [r"\bорловск\w*\s+обл\w*\b", r"\bорел\b", r"\bорёл\b"]),
+    ("62", "Рязанская область", [r"\bрязан\w*\b"]),
+    ("67", "Смоленская область", [r"\bсмоленск\w*\b"]),
+    ("68", "Тамбовская область", [r"\bтамбов\w*\b"]),
+    ("69", "Тверская область", [r"\bтвер\w*\b"]),
+    ("71", "Тульская область", [r"\bтул\w*\b"]),
+    ("76", "Ярославская область", [r"\bярослав\w*\b"]),
+    ("35", "Вологодская область", [r"\bволог\w*\b", r"\bчереповец\w*\b"]),
+    ("39", "Калининградская область", [r"\bкалининград\w*\b"]),
+    ("51", "Мурманская область", [r"\bмурманск\w*\b"]),
+    ("53", "Новгородская область", [r"\bвелики\w*\s+новгород\w*\b", r"\bновгородск\w*\s+обл\w*\b"]),
+    ("60", "Псковская область", [r"\bпсков\w*\b"]),
+    ("10", "Республика Карелия", [r"\bкарел\w*\b", r"\bпетрозаводск\w*\b"]),
+    ("11", "Республика Коми", [r"\bкоми\b", r"\bсыктывкар\w*\b"]),
+    ("29", "Архангельская область", [r"\bархангельск\w*\b"]),
+    ("83", "Ненецкий автономный округ", [r"\bненец\w*\s+автоном\w*\s+округ\w*\b", r"\bнао\b"]),
+    ("45", "Курганская область", [r"\bкурган\w*\b"]),
+    ("56", "Оренбургская область", [r"\bоренбург\w*\b"]),
+    ("58", "Пензенская область", [r"\bпенз\w*\b"]),
+    ("73", "Ульяновская область", [r"\bульяновск\w*\b"]),
+    ("03", "Республика Бурятия", [r"\bбурят\w*\b", r"\bулан[-\s]?удэ\b"]),
+    ("04", "Республика Алтай", [r"\bреспублик\w*\s+алтай\w*\b", r"\bгорно[-\s]?алтайск\w*\b"]),
+    ("17", "Республика Тыва", [r"\bтыв\w*\b", r"\bтув\w*\b", r"\bкызыл\w*\b"]),
+    ("19", "Республика Хакасия", [r"\bхакас\w*\b", r"\bабакан\w*\b"]),
+    ("38", "Иркутская область", [r"\bиркутск\w*\b", r"\bбратск\w*\b"]),
+    ("75", "Забайкальский край", [r"\bзабайкаль\w*\b", r"\bчит\w*\b"]),
+    ("25", "Приморский край", [r"\bприморск\w*\s+кра\w*\b", r"\bвладивосток\w*\b"]),
+    ("27", "Хабаровский край", [r"\bхабаровск\w*\b"]),
+    ("28", "Амурская область", [r"\bамурск\w*\s+обл\w*\b", r"\bблаговещенск\w*\b"]),
+    ("41", "Камчатский край", [r"\bкамчат\w*\b", r"\bпетропавловск[-\s]?камчатск\w*\b"]),
+    ("49", "Магаданская область", [r"\bмагадан\w*\b"]),
+    ("65", "Сахалинская область", [r"\bсахалин\w*\b", r"\bюжно[-\s]?сахалинск\w*\b"]),
+    ("79", "Еврейская автономная область", [r"\bеврейск\w*\s+автоном\w*\s+обл\w*\b", r"\bбиробиджан\w*\b"]),
+    ("87", "Чукотский автономный округ", [r"\bчукот\w*\b", r"\bанадыр\w*\b"]),
+    ("14", "Республика Саха (Якутия)", [r"\bсаха\b", r"\bякут\w*\b"]),
+    ("30", "Астраханская область", [r"\bастрахан\w*\b"]),
+    ("01", "Республика Адыгея", [r"\bадыге\w*\b", r"\bмайкоп\w*\b"]),
+    ("05", "Республика Дагестан", [r"\bдагестан\w*\b", r"\bмахачкал\w*\b"]),
+    ("06", "Республика Ингушетия", [r"\bингуш\w*\b", r"\bмагас\w*\b"]),
+    ("07", "Кабардино-Балкарская Республика", [r"\bкабардино[-\s]?балкар\w*\b", r"\bнальчик\w*\b"]),
+    ("08", "Республика Калмыкия", [r"\bкалмык\w*\b", r"\bэлист\w*\b"]),
+    ("09", "Карачаево-Черкесская Республика", [r"\bкарачаево[-\s]?черкес\w*\b", r"\bчеркесск\w*\b"]),
+    ("15", "Республика Северная Осетия — Алания", [r"\bсеверн\w*\s+осети\w*\b", r"\bвладикавказ\w*\b"]),
+    ("20", "Чеченская Республика", [r"\bчечен\w*\b", r"\bгрозн\w*\b"]),
+    ("91", "Республика Крым", [r"\bкрым\w*\b"]),
+    ("92", "Севастополь", [r"\bсевастопол\w*\b"]),
+]
+
+
+REGION_INTRO_RE = r"\b(в|во|по|для|из|около|рядом\s+с)\s+"
+
+
+def detect_regions(text: str):
+    t = (text or "").lower().replace("ё", "е")
+    found = []
+
+    for code, name, patterns in REGION_FILTERS:
+        for pattern in patterns:
+            if re.search(pattern, t, flags=re.IGNORECASE):
+                found.append({"code": code, "name": name, "patterns": patterns})
+                break
+
+    seen = set()
+    result = []
+    for item in found:
+        if item["code"] not in seen:
+            seen.add(item["code"])
+            result.append(item)
+
+    return result
+
+
+def strip_detected_regions(text: str, regions: list[dict]) -> str:
+    result = text or ""
+    for region in regions:
+        for pattern in region.get("patterns", []):
+            result = re.sub(REGION_INTRO_RE + pattern, " ", result, flags=re.IGNORECASE)
+            result = re.sub(pattern, " ", result, flags=re.IGNORECASE)
+    return normalize_text(result)
+
+
+def extract_fz_filter(text: str) -> list[str]:
+    t = (text or "").lower().replace("ё", "е")
+    fz = []
+
+    if re.search(r"\b44\s*[- ]?\s*фз\b|\bфз\s*44\b", t):
+        fz.append("44")
+    if re.search(r"\b223\s*[- ]?\s*фз\b|\bфз\s*223\b", t):
+        fz.append("223")
+    if re.search(r"\b615\s*[- ]?\s*(пп|фз)\b", t):
+        fz.append("615")
+
+    return fz or ["44", "223"]
 
 
 def extract_eis_query(text: str) -> str:
-    t = normalize_text(text.lower())
+    t = normalize_text(text).lower().replace("ё", "е")
+    regions = detect_regions(t)
 
-    remove_phrases = [
-        "найди в еис", "найди еис", "найди тендер на", "найди тендер",
-        "найди тендр на", "найди тендр", "найди закупку на", "найди закупку",
-        "тендер на", "тендр на", "закупку на", "который опубликован",
-        "которая опубликована", "которые опубликованы", "ждет заявки", "ждёт заявки",
-        "ждет заявок", "ждёт заявок", "прием заявок", "приём заявок",
-        "регион любой", "любой регион", "цена любая", "любая цена", "в еис"
-    ]
-
-    for phrase in remove_phrases:
-        t = t.replace(phrase, " ")
-
+    t = re.sub(r"[\"'«»]", " ", t)
     t = re.sub(r"[,.;:!?()\[\]{}]", " ", t)
-    t = re.sub(r"\s+", " ", t).strip()
-    return t
+    t = strip_detected_regions(t, regions)
 
-
-def normalize_damia_items(payload):
-    items = []
-
-    if isinstance(payload, list):
-        return payload
-
-    if not isinstance(payload, dict):
-        return []
-
-    # DaMIA часто возвращает закупки так:
-    # {"44": {"номер_закупки": {...}}, "223": {"номер_закупки": {...}}}
-    # Поэтому превращаем такие вложенные словари в обычный список лотов.
-    for law_key in ["44", "223", "615"]:
-        law_section = payload.get(law_key)
-
-        if isinstance(law_section, dict):
-            for reg_number, tender_data in law_section.items():
-                if isinstance(tender_data, dict):
-                    tender_data = tender_data.copy()
-                    tender_data["РегНомер"] = str(reg_number)
-                    tender_data["ФЗ"] = law_key
-                    items.append(tender_data)
-
-    if items:
-        return items
-
-    possible_keys = [
-        "data", "result", "results", "items", "zakupki", "Закупки",
-        "list", "rows", "documents"
+    command_patterns = [
+        r"^\s*(пожалуйста\s+)?(найди|поищи|подбери|покажи|ищи|найдите|поищите|покажите)\s+",
+        r"\b(в\s+еис|еис)\b",
+        r"\b(тендеры|тендера|тендеров|тендер|тендры|тендра|тендров|тендр)\b",
+        r"\b(закупки|закупку|закупка|закупок)\b",
+        r"\b(по\s+)?(44|223)\s*[- ]?\s*фз\b",
+        r"\b615\s*[- ]?\s*пп\b",
+        r"\bфз\s*(44|223)\b",
+        r"\b(который|которая|которые)\s+(опубликован|опубликована|опубликованы)\b",
+        r"\b(опубликован|опубликована|опубликованы)\b",
+        r"\b(ждет|ждёт|ждут)\s+(заявки|заявок)\b",
+        r"\b(прием|приём)\s+заявок\b",
+        r"\bрегион\s+любой\b",
+        r"\bлюбой\s+регион\b",
+        r"\bцена\s+любая\b",
+        r"\bлюбая\s+цена\b",
     ]
 
-    for key in possible_keys:
-        value = payload.get(key)
-        if isinstance(value, list):
-            return value
-        if isinstance(value, dict):
-            nested = normalize_damia_items(value)
-            if nested:
-                return nested
+    for pattern in command_patterns:
+        t = re.sub(pattern, " ", t, flags=re.IGNORECASE)
 
-    for value in payload.values():
-        if isinstance(value, list) and value and isinstance(value[0], dict):
-            return value
+    stop_words = {
+        "на", "по", "в", "во", "для", "с", "со", "и", "или",
+        "найди", "поищи", "подбери", "покажи", "ищи",
+        "тендер", "тендеры", "тендера", "тендеров",
+        "тендр", "тендры", "тендра", "тендров",
+        "закупка", "закупку", "закупки", "закупок",
+        "еис", "фз", "44", "223", "615", "ы",
+    }
 
-    return []
+    words = []
+    for word in re.split(r"\s+", t):
+        word = word.strip("-_ ")
+        if not word:
+            continue
+        if word in stop_words:
+            continue
+        if re.fullmatch(r"[а-яa-z]{1}", word, flags=re.IGNORECASE):
+            continue
+        words.append(word)
+
+    return normalize_text(" ".join(words))
+
+
+def extract_tender_filters(text: str) -> dict:
+    regions = detect_regions(text)
+    query = extract_eis_query(text)
+
+    return {
+        "query": query,
+        "fz": extract_fz_filter(text),
+        "region_codes": [item["code"] for item in regions],
+        "region_names": [item["name"] for item in regions],
+    }
 
 
 def get_first_value(obj: dict, keys: list[str], default: str = "") -> str:
@@ -475,7 +600,11 @@ def get_first_value(obj: dict, keys: list[str], default: str = "") -> str:
         if key in obj and obj[key] is not None:
             value = obj[key]
             if isinstance(value, dict):
-                for nested_key in ["Название", "Наименование", "Сумма", "value", "name"]:
+                for nested_key in [
+                    "Название", "Наименование", "НаимПолн", "НаимСокр", "Сумма",
+                    "value", "name", "title", "ФЗ", "РегНомер", "regn",
+                    "regNumber", "price", "amount", "url", "Url"
+                ]:
                     if nested_key in value and value[nested_key] is not None:
                         return str(value[nested_key]).strip()
             else:
@@ -487,69 +616,347 @@ def build_zakupki_url(reg_number: str, fz: str = "") -> str:
     reg_number = str(reg_number or "").strip()
     fz = str(fz or "").strip()
 
-    if fz == "223":
-        return f"https://zakupki.gov.ru/epz/order/notice/notice223/common-info.html?regNumber={reg_number}"
+    if not reg_number:
+        return "https://zakupki.gov.ru/epz/order/extendedsearch/results.html"
 
-    if fz == "615":
-        return f"https://zakupki.gov.ru/epz/order/notice/notice615/common-info.html?regNumber={reg_number}"
-
-    return f"https://zakupki.gov.ru/epz/order/notice/ea20/view/common-info.html?regNumber={reg_number}"
-
-
-def search_eis_tenders(query: str, limit: int = 5):
+    # Универсальная ссылка. Для 44-ФЗ прямой путь зависит от способа закупки,
+    # а поиск по номеру открывает нужную карточку без угадывания маршрута.
     params = {
-        "q": query,
-        "status": "1",
-        "page": "1",
-        "key": DAMIA_API_KEY,
+        "searchString": reg_number,
+        "morphology": "on",
+        "pageNumber": "1",
+        "sortDirection": "false",
+        "recordsPerPage": "_10",
+        "showLotsInfoHidden": "false",
+        "sortBy": "UPDATE_DATE",
+        "fz44": "on",
+        "fz223": "on",
+        "currencyIdGeneral": "-1",
     }
+
+    return "https://zakupki.gov.ru/epz/order/extendedsearch/results.html?" + urllib.parse.urlencode(params)
+
+
+def make_damia_query_variants(query: str):
+    query = normalize_text(query).lower().replace("ё", "е")
+    words = [w for w in re.split(r"\s+", query) if len(w) > 1]
+
+    variants = []
+
+    if query:
+        variants.append(query)
+
+    if len(words) >= 2:
+        variants.append(",".join(words))
+        variants.append(" ".join(words[:2]))
+
+    # Частый кейс: пользователь пишет «монтажу кабельных линий»,
+    # а в ЕИС формулировки могут быть «монтаж кабеля», «кабельная линия» и т.д.
+    if "кабель" in query and "монтаж" in query:
+        variants.append("монтаж,кабель")
+        variants.append("монтаж кабель")
+        variants.append("кабельные линии")
+        variants.append("кабель")
+
+    if len(words) >= 1:
+        variants.append(words[0])
+
+    seen = set()
+    result = []
+    for item in variants:
+        item = normalize_text(item)
+        if item and item not in seen:
+            seen.add(item)
+            result.append(item)
+
+    return result
+
+
+def normalize_damia_items(payload):
+    items = []
+    seen_ids = set()
+
+    def as_law(value):
+        s = str(value or "").strip()
+        match = re.search(r"\b(44|223|615)\b", s)
+        return match.group(1) if match else ""
+
+    def looks_like_reg_number(value):
+        return bool(re.fullmatch(r"\d{10,25}", str(value or "").strip()))
+
+    def has_any_key(obj, keys):
+        return any(key in obj and obj[key] not in (None, "") for key in keys)
+
+    def add_item(obj, law="", reg_number=""):
+        tender = obj.copy()
+        if reg_number and not has_any_key(tender, ["РегНомер", "regn", "regNumber", "reg_number", "noticeNumber", "НомерИзвещения"]):
+            tender["РегНомер"] = str(reg_number)
+        if law and not has_any_key(tender, ["ФЗ", "fz", "law", "lawNumber"]):
+            tender["ФЗ"] = law
+
+        reg = get_first_value(tender, ["РегНомер", "regn", "regNumber", "reg_number", "noticeNumber", "НомерИзвещения"])
+        key = reg or json.dumps(tender, ensure_ascii=False, sort_keys=True)[:300]
+        if key not in seen_ids:
+            seen_ids.add(key)
+            items.append(tender)
+
+    def walk(node, law="", reg_number=""):
+        if isinstance(node, list):
+            for item in node:
+                walk(item, law, reg_number)
+            return
+
+        if not isinstance(node, dict):
+            return
+
+        local_law = as_law(node.get("ФЗ") or node.get("fz") or node.get("law") or node.get("lawNumber")) or law
+        local_reg = get_first_value(node, ["РегНомер", "regn", "regNumber", "reg_number", "noticeNumber", "НомерИзвещения"]) or reg_number
+
+        tender_like = (
+            local_reg
+            and has_any_key(node, ["Продукт", "Название", "Наименование", "ОбъектЗакупки", "Предмет", "ДатаПубл", "НачЦена", "Цена", "Статус"])
+        )
+        if tender_like:
+            add_item(node, local_law, local_reg)
+            return
+
+        for key, value in node.items():
+            next_law = local_law
+            next_reg = local_reg
+
+            key_law = as_law(key)
+            if key_law:
+                next_law = key_law
+
+            if looks_like_reg_number(key):
+                next_reg = str(key)
+
+            walk(value, next_law, next_reg)
+
+    walk(payload)
+    return items
+
+
+def parse_damia_tender_item(item: dict) -> dict | None:
+    reg_number = get_first_value(item, ["РегНомер", "regn", "regNumber", "reg_number", "noticeNumber", "НомерИзвещения"])
+    if not reg_number:
+        return None
+
+    fz = get_first_value(item, ["ФЗ", "fz", "law", "lawNumber"])
+    title = get_first_value(
+        item,
+        ["Продукт", "Название", "Наименование", "ОбъектЗакупки", "Предмет", "name", "title"],
+        "Без названия"
+    )
+    price = get_first_value(
+        item,
+        ["НачЦена", "Цена", "НМЦК", "НачальнаяЦена", "Сумма", "price", "maxPrice", "initialPrice"],
+        "Цена не указана"
+    )
+    pub_date = get_first_value(item, ["ДатаПубл", "date", "publishDate", "publicationDate"], "")
+    end_date = get_first_value(item, ["ДатаОконч", "ДатаОкончания", "endDate", "deadline"], "")
+    region = get_first_value(item, ["Регион", "region", "regionName"], "")
+    customer = get_first_value(item, ["Заказчик", "customer", "customerName"], "")
+
+    customer_obj = item.get("Заказчик")
+    if isinstance(customer_obj, dict):
+        customer = get_first_value(customer_obj, ["НаимПолн", "Наименование", "Название", "name"], customer)
+
+    explicit_url = get_first_value(item, ["Url", "URL", "url", "Ссылка", "href"], "")
+
+    return {
+        "title": title,
+        "price": price,
+        "fz": fz,
+        "pub_date": pub_date,
+        "end_date": end_date,
+        "region": region,
+        "customer": customer,
+        "reg_number": reg_number,
+        "url": explicit_url or build_zakupki_url(reg_number, fz),
+        "source": "DaMIA",
+    }
+
+
+def search_eis_tenders_damia(filters: dict, limit: int = 5):
+    query = filters.get("query", "")
+    fz_list = filters.get("fz") or ["44", "223"]
+    region_codes = filters.get("region_codes") or []
 
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Accept": "application/json",
     }
 
-    response = requests.get(
-        "https://api.damia.ru/zakupki/zsearch",
-        params=params,
-        headers=headers,
-        timeout=40,
-    )
+    all_tenders = []
+    seen_numbers = set()
+    last_payload = None
+    last_error = None
+
+    for fz in fz_list:
+        for q in make_damia_query_variants(query):
+            params = {
+                "q": q,
+                "fz": fz,
+                "status": "1",
+                "page": "1",
+                "key": DAMIA_API_KEY,
+            }
+
+            if region_codes:
+                params["region"] = ",".join(region_codes)
+
+            try:
+                response = requests.get(
+                    "https://api.damia.ru/zakupki/zsearch",
+                    params=params,
+                    headers=headers,
+                    timeout=40,
+                )
+                response.raise_for_status()
+
+                try:
+                    payload = response.json()
+                except Exception:
+                    payload = json.loads(response.text)
+
+                last_payload = payload
+
+                if isinstance(payload, dict):
+                    error_text = get_first_value(payload, ["error", "Ошибка", "message", "msg"], "")
+                    if error_text and not normalize_damia_items(payload):
+                        raise ValueError(error_text)
+
+                for item in normalize_damia_items(payload):
+                    if not isinstance(item, dict):
+                        continue
+
+                    tender = parse_damia_tender_item(item)
+                    if not tender:
+                        continue
+
+                    reg_number = tender["reg_number"]
+                    if reg_number in seen_numbers:
+                        continue
+
+                    seen_numbers.add(reg_number)
+                    all_tenders.append(tender)
+
+                    if len(all_tenders) >= limit:
+                        return all_tenders
+
+            except Exception as e:
+                last_error = e
+                safe_params = {k: v for k, v in params.items() if k != "key"}
+                logging.exception("Ошибка запроса DaMIA. params=%s", safe_params)
+
+    if last_error:
+        logging.info(
+            "DaMIA last payload: %s",
+            json.dumps(last_payload, ensure_ascii=False)[:2000] if last_payload else "empty"
+        )
+
+    return all_tenders[:limit]
+
+
+def clean_html_text(text: str) -> str:
+    return normalize_text(re.sub(r"\s+", " ", text or ""))
+
+
+def search_eis_tenders_direct(filters: dict, limit: int = 5):
+    query = filters.get("query", "")
+    fz_list = filters.get("fz") or ["44", "223"]
+    region_codes = filters.get("region_codes") or []
+
+    params = {
+        "searchString": query,
+        "morphology": "on",
+        "pageNumber": "1",
+        "sortDirection": "false",
+        "recordsPerPage": "_10",
+        "showLotsInfoHidden": "false",
+        "sortBy": "UPDATE_DATE",
+        "af": "on",
+        "ca": "on",
+        "pc": "on",
+        "pa": "on",
+        "currencyIdGeneral": "-1",
+    }
+
+    if "44" in fz_list:
+        params["fz44"] = "on"
+    if "223" in fz_list:
+        params["fz223"] = "on"
+
+    # В ЕИС HTML-фильтр региона менее стабилен, чем DaMIA region.
+    # Если DaMIA не сработала, прямой поиск оставляем как запасной вариант без жесткого региона.
+    if region_codes:
+        logging.info("Прямой поиск ЕИС запущен без HTML-фильтра региона. region_codes=%s", region_codes)
+
+    url = "https://zakupki.gov.ru/epz/order/extendedsearch/results.html?" + urllib.parse.urlencode(params)
+    headers = {
+        "User-Agent": "Mozilla/5.0",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
+
+    response = requests.get(url, headers=headers, timeout=40)
     response.raise_for_status()
 
-    try:
-        payload = response.json()
-    except Exception:
-        payload = json.loads(response.text)
-
-    if isinstance(payload, dict):
-        error_text = get_first_value(payload, ["error", "Ошибка", "message", "msg"], "")
-        if error_text and not normalize_damia_items(payload):
-            raise ValueError(error_text)
-
-    items = normalize_damia_items(payload)
+    soup = BeautifulSoup(response.text, "html.parser")
+    blocks = soup.select(".search-registry-entry-block")
     tenders = []
+    seen_numbers = set()
 
-    for item in items:
-        if not isinstance(item, dict):
+    for block in blocks:
+        number_link = block.select_one(".registry-entry__header-mid__number a") or block.select_one("a[href*='regNumber=']")
+        if not number_link:
             continue
 
-        reg_number = get_first_value(item, ["РегНомер", "regn", "regNumber", "reg_number", "noticeNumber"])
-        if not reg_number:
+        number_text = clean_html_text(number_link.get_text(" "))
+        match = re.search(r"\d{10,}", number_text)
+        reg_number = match.group(0) if match else ""
+        if not reg_number or reg_number in seen_numbers:
             continue
 
-        fz = get_first_value(item, ["ФЗ", "fz", "law", "lawNumber"])
-        title = get_first_value(item, ["Продукт", "Название", "Наименование", "name", "title"], "Без названия")
-        price = get_first_value(item, ["Цена", "НМЦК", "Сумма", "price", "maxPrice", "initialPrice"], "Цена не указана")
-        pub_date = get_first_value(item, ["ДатаПубл", "date", "publishDate", "publicationDate"], "")
+        href = number_link.get("href", "")
+        full_url = urllib.parse.urljoin("https://zakupki.gov.ru", href) if href else build_zakupki_url(reg_number)
 
+        title_node = (
+            block.select_one(".registry-entry__body-value")
+            or block.select_one(".registry-entry__body-href")
+            or block.select_one("a[href*='common-info']")
+        )
+        title = clean_html_text(title_node.get_text(" ")) if title_node else "Без названия"
+
+        price_node = block.select_one(".price-block__value")
+        price = clean_html_text(price_node.get_text(" ")) if price_node else "Цена не указана"
+
+        customer = ""
+        customer_nodes = block.select(".registry-entry__body-href a, .registry-entry__body-value a")
+        for node in customer_nodes:
+            txt = clean_html_text(node.get_text(" "))
+            if txt and txt != title and not re.search(r"\d{10,}", txt):
+                customer = txt
+                break
+
+        date_values = [clean_html_text(n.get_text(" ")) for n in block.select(".data-block__value")]
+        pub_date = date_values[0] if len(date_values) >= 1 else ""
+        end_date = date_values[-1] if len(date_values) >= 2 else ""
+
+        fz = "223" if "notice223" in full_url else "44"
+
+        seen_numbers.add(reg_number)
         tenders.append({
             "title": title,
             "price": price,
             "fz": fz,
             "pub_date": pub_date,
+            "end_date": end_date,
+            "region": "",
+            "customer": customer,
             "reg_number": reg_number,
-            "url": build_zakupki_url(reg_number, fz),
+            "url": full_url,
+            "source": "ЕИС",
         })
 
         if len(tenders) >= limit:
@@ -558,30 +965,70 @@ def search_eis_tenders(query: str, limit: int = 5):
     return tenders
 
 
-def build_eis_answer(query: str, tenders: list[dict]) -> str:
-    if not tenders:
-        return "По такому запросу активных закупок не нашла."
+def search_eis_tenders(text: str, limit: int = 5):
+    filters = extract_tender_filters(text)
+    if not filters["query"]:
+        return []
 
-    text = f"Нашла в ЕИС по запросу: {query}\n\n"
+    tenders = search_eis_tenders_damia(filters, limit)
+    if tenders:
+        return tenders[:limit]
+
+    try:
+        tenders = search_eis_tenders_direct(filters, limit)
+        if tenders:
+            return tenders[:limit]
+    except Exception:
+        logging.exception("Прямой поиск ЕИС тоже не сработал")
+
+    return []
+
+
+def build_eis_answer(text: str, tenders: list[dict]) -> str:
+    filters = extract_tender_filters(text)
+    query = filters["query"]
+    region_text = ", ".join(filters.get("region_names") or [])
+    fz_text = ", ".join([f"{fz}-ФЗ" if fz != "615" else "615-ПП" for fz in filters.get("fz", [])])
+
+    scope = []
+    if fz_text:
+        scope.append(fz_text)
+    if region_text:
+        scope.append(region_text)
+    scope_text = f" ({'; '.join(scope)})" if scope else ""
+
+    if not tenders:
+        return f"По запросу «{query}»{scope_text} активных закупок не нашла. Тут уже не поэзия: либо реально пусто, либо DaMIA/ЕИС сейчас отдали пустой ответ."
+
+    text_out = f"Нашла в ЕИС по запросу: {query}{scope_text}\n\n"
 
     for tender in tenders:
         extra = []
         if tender.get("fz"):
             extra.append(f"ФЗ: {tender['fz']}")
+        if tender.get("region"):
+            extra.append(f"Регион: {tender['region']}")
         if tender.get("pub_date"):
             extra.append(f"Опубликовано: {tender['pub_date']}")
+        if tender.get("end_date"):
+            extra.append(f"Окончание: {tender['end_date']}")
         if tender.get("reg_number"):
             extra.append(f"№ {tender['reg_number']}")
+        if tender.get("source"):
+            extra.append(f"Источник: {tender['source']}")
 
         meta = " | ".join(extra)
 
-        text += f"🔹 {tender['title']}\n"
+        text_out += f"🔹 {tender['title']}\n"
         if meta:
-            text += f"{meta}\n"
-        text += f"Цена: {tender['price']}\n"
-        text += f"{tender['url']}\n\n"
+            text_out += f"{meta}\n"
+        if tender.get("customer"):
+            text_out += f"Заказчик: {tender['customer']}\n"
+        text_out += f"Цена: {tender['price']}\n"
+        text_out += f"{tender['url']}\n\n"
 
-    return text.strip()
+    return text_out.strip()
+
 def build_turn_rules(user_text: str, reply_lang: str, use_web_search: bool) -> str:
     lang_line = "Reply in English." if reply_lang == "en" else "Reply in Russian."
 
@@ -1219,16 +1666,24 @@ async def process_user_message(message: Message, user_text: str, source: str = "
         return
 
     if is_eis_tender_request(user_text):
-        query = extract_eis_query(user_text)
+        filters = extract_tender_filters(user_text)
+        query = filters["query"]
 
         if not query:
             await message.answer("Напиши, что именно искать в ЕИС. Например: монтаж кабельных линий")
             return
 
-        await message.answer(f"Ищу в ЕИС: {query}")
+        scope = []
+        if filters.get("fz"):
+            scope.append(", ".join([f"{fz}-ФЗ" if fz != "615" else "615-ПП" for fz in filters["fz"]]))
+        if filters.get("region_names"):
+            scope.append(", ".join(filters["region_names"]))
+        scope_text = f" ({'; '.join(scope)})" if scope else ""
+
+        await message.answer(f"Ищу в ЕИС: {query}{scope_text}")
 
         try:
-            tenders = await asyncio.to_thread(search_eis_tenders, query, 5)
+            tenders = await asyncio.to_thread(search_eis_tenders, user_text, 5)
         except Exception:
             logging.exception("Ошибка поиска в ЕИС")
             await message.answer(
@@ -1237,7 +1692,7 @@ async def process_user_message(message: Message, user_text: str, source: str = "
             )
             return
 
-        await send_text_reply(message, build_eis_answer(query, tenders))
+        await send_text_reply(message, build_eis_answer(user_text, tenders))
         return
 
     state["history"].append({"role": "user", "content": user_text})
@@ -1386,4 +1841,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())
