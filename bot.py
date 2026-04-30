@@ -420,20 +420,34 @@ def extract_eis_query(text: str) -> str:
 
     t = re.sub(r"[,.;:!?()\[\]{}]", " ", t)
     t = re.sub(r"\s+", " ", t).strip()
-
-    # Иногда после очистки фразы вроде "найди" может оставаться лишняя буква:
-    # "ы монтаж кабельных линий". Убираем такой мусор только в начале запроса.
-    t = re.sub(r"^[ыи]\s+", "", t).strip()
-
     return t
 
 
 def normalize_damia_items(payload):
+    items = []
+
     if isinstance(payload, list):
         return payload
 
     if not isinstance(payload, dict):
         return []
+
+    # DaMIA часто возвращает закупки так:
+    # {"44": {"номер_закупки": {...}}, "223": {"номер_закупки": {...}}}
+    # Поэтому превращаем такие вложенные словари в обычный список лотов.
+    for law_key in ["44", "223", "615"]:
+        law_section = payload.get(law_key)
+
+        if isinstance(law_section, dict):
+            for reg_number, tender_data in law_section.items():
+                if isinstance(tender_data, dict):
+                    tender_data = tender_data.copy()
+                    tender_data["РегНомер"] = str(reg_number)
+                    tender_data["ФЗ"] = law_key
+                    items.append(tender_data)
+
+    if items:
+        return items
 
     possible_keys = [
         "data", "result", "results", "items", "zakupki", "Закупки",
@@ -505,9 +519,7 @@ def search_eis_tenders(query: str, limit: int = 5):
 
     try:
         payload = response.json()
-        logging.info("DAMIA RAW RESPONSE: %s", json.dumps(payload, ensure_ascii=False)[:3000])
     except Exception:
-        logging.info("DAMIA RAW TEXT: %s", response.text[:3000])
         payload = json.loads(response.text)
 
     if isinstance(payload, dict):
@@ -1374,4 +1386,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main()) 
